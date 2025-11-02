@@ -122,7 +122,7 @@ public class AudioStreaming {
             }
             return
         }
-        retries+=1
+        retries += 1
         Thread.sleep(forTimeInterval: pow(2.0, Double(retries)))
         rtmpConnection.connect(url!)
         if SwiftFlutterAudioStreamingPlugin.eventSink != nil {
@@ -151,16 +151,30 @@ public class AudioStreaming {
             .muted: false, // mute audio
             .bitrate: 32 * 1000,
         ]
-        rtmpStream.appendSampleBuffer( buffer, withType: .audio)
+        rtmpStream.appendSampleBuffer(buffer, withType: .audio)
     }
     
     
     public func stop() {
         rtmpConnection.close()
+        deactivateAudioSession()  // Mic indicator gone
     }
 
     public func dispose(){
-        
+        deactivateAudioSession()  // Final cleanup
+        rtmpStream = nil
+        rtmpConnection = RTMPConnection()
+    }
+
+    // MARK: - Private Helper
+    private func deactivateAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+            print("AVAudioSession deactivated successfully")
+        } catch {
+            print("Error deactivating AVAudioSession: \(error)")
+        }
     }
 }
 
@@ -173,13 +187,14 @@ class AudioStreamingQoSDelegate: RTMPStreamDelegate {
     func rtmpStream(_ stream: RTMPStream, didPublishInsufficientBW connection: RTMPConnection){
         guard let videoBitrate = stream.videoSettings[.bitrate] as? UInt32 else { return }
         
-        var         newVideoBitrate = UInt32(videoBitrate / 2)
+        var newVideoBitrate = UInt32(videoBitrate / 2)
         if newVideoBitrate < minBitrate {
             newVideoBitrate = minBitrate
         }
         print("Insufficient: \(videoBitrate) -> \(newVideoBitrate)")
         stream.videoSettings[.bitrate] = newVideoBitrate
     }
+    
     func rtmpStream(_ stream: RTMPStream, didPublishSufficientBW connection: RTMPConnection){
         guard let videoBitrate = stream.videoSettings[.bitrate] as? UInt32 else { return }
         
@@ -190,12 +205,16 @@ class AudioStreamingQoSDelegate: RTMPStreamDelegate {
         print("Sufficient: \(videoBitrate) -> \(newVideoBitrate)")
         stream.videoSettings[.bitrate] = newVideoBitrate
     }
+    
     func rtmpStream(_ stream: RTMPStream, audio: AVAudioBuffer, presentationTimeStamp: CMTime){
     }
+    
     func rtmpStream(_ stream: RTMPStream, didOutput video: CMSampleBuffer){
     }
+    
     func rtmpStream(_ stream: RTMPStream, didStatics connection: RTMPConnection){
     }
+    
     func rtmpStreamDidClear(_ stream: RTMPStream){
         print("StreamDidClear")
     }
