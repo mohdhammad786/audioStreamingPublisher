@@ -68,7 +68,8 @@ class StreamHandlerEvent: NSObject, FlutterStreamHandler {
     
     func onCancel(withArguments arguments: Any?) -> FlutterError? {
         SwiftFlutterAudioStreamingPlugin.eventSink = nil
-        SwiftFlutterAudioStreamingPlugin.eventChannel?.setStreamHandler(nil)
+        //checking remioving it to fix MissingPluginException(No implementation found for method cancel on channel plugins.flutter.io/flutter_audio_streaming/streaming_event
+        //SwiftFlutterAudioStreamingPlugin.eventChannel?.setStreamHandler(nil)
         print("StreamHandlerEvent: onCancel")
         return nil
     }

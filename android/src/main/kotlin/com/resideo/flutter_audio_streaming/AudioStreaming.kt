@@ -1,18 +1,19 @@
-package com.mminh.flutter_audio_streaming
+package com.resideo.flutter_audio_streaming
 
 import android.app.Activity
 import android.util.Log
-import com.pedro.rtmp.utils.ConnectCheckerRtmp
-import com.pedro.rtplibrary.rtmp.RtmpOnlyAudio
+import com.pedro.rtplibrary.rtsp.RtspOnlyAudio
+import com.pedro.rtsp.utils.ConnectCheckerRtsp
 import io.flutter.plugin.common.MethodChannel
 import java.io.IOException
 
 class AudioStreaming(
     private var activity: Activity? = null,
     private var dartMessenger: DartMessenger? = null
-) : ConnectCheckerRtmp {
+) : ConnectCheckerRtsp {
 
-    private val rtmpAudio: RtmpOnlyAudio = RtmpOnlyAudio(this)
+
+    private val rtspAudio: RtspOnlyAudio = RtspOnlyAudio(this)
     private var prepared: Boolean = false
     private var bitrate: Int? = null
     private var sampleRate: Int? = null
@@ -30,9 +31,9 @@ class AudioStreaming(
         this.echoCanceler = echoCanceler
         this.noiseSuppressor = noiseSuppressor
         prepared = true
-        return rtmpAudio.prepareAudio(
-            bitrate ?: (24 * 1024),
-            sampleRate ?: 16000,
+        return rtspAudio.prepareAudio(
+            bitrate ?: (128 * 1024),
+            sampleRate ?: 44100,
             isStereo ?: true,
             echoCanceler ?: false,
             (noiseSuppressor ?: true)
@@ -41,9 +42,9 @@ class AudioStreaming(
 
     private fun prepare(): Boolean {
         prepared = true
-        return rtmpAudio.prepareAudio(
-            this.bitrate ?: (24 * 1024),
-            this.sampleRate ?: 16000,
+        return rtspAudio.prepareAudio(
+            this.bitrate ?: (128 * 1024),
+            this.sampleRate ?: 44100,
             this.isStereo ?: true,
             this.echoCanceler ?: false,
             this.noiseSuppressor ?: true
@@ -62,10 +63,10 @@ class AudioStreaming(
             return
         }
         try {
-            if (!rtmpAudio.isStreaming) {
+            if (!rtspAudio.isStreaming) {
                 if (prepared || prepare()) {
                     // ready to start streaming
-                    rtmpAudio.startStream(url)
+                    rtspAudio.startStream(url)
                     val ret = hashMapOf<String, Any>()
                     ret["url"] = url
                     result.success(ret)
@@ -85,7 +86,7 @@ class AudioStreaming(
 
     fun muteStreaming(result: MethodChannel.Result) {
         try {
-            rtmpAudio.disableAudio()
+            rtspAudio.disableAudio()
             result.success(null)
         } catch (e: IllegalStateException) {
             result.error("MuteAudioStreamingFailed", e.message, null)
@@ -94,7 +95,7 @@ class AudioStreaming(
 
     fun unMuteStreaming(result: MethodChannel.Result) {
         try {
-            rtmpAudio.enableAudio()
+            rtspAudio.enableAudio()
             result.success(null)
         } catch (e: IllegalStateException) {
             result.error("UnMuteAudioStreamingFailed", e.message, null)
@@ -103,56 +104,98 @@ class AudioStreaming(
 
     fun stopStreaming(result: MethodChannel.Result) {
         try {
-            rtmpAudio.stopStream()
+            rtspAudio.stopStream()
             result.success(null)
         } catch (e: IllegalStateException) {
             result.error("StopAudioStreamingFailed", e.message, null)
         }
     }
 
-    override fun onConnectionSuccessRtmp() {
-        Log.d(TAG, "onConnectionSuccessRtmp")
+    /*   override fun onConnectionSuccessRtmp() {
+           Log.d(TAG, "onConnectionSuccessRtmp")
+       }
+
+       override fun onNewBitrateRtmp(bitrate: Long) {
+           Log.d(TAG, "onNewBitrateRtmp: $bitrate")
+       }
+
+       override fun onDisconnectRtmp() {
+           Log.d(TAG, "onDisconnectRtmp")
+           activity?.runOnUiThread {
+               dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Disconnected")
+           }
+       }
+
+       override fun onAuthErrorRtmp() {
+           Log.d(TAG, "onAuthErrorRtmp")
+           activity?.runOnUiThread {
+               dartMessenger?.send(DartMessenger.EventType.ERROR, "Auth error")
+           }
+       }
+
+       override fun onAuthSuccessRtmp() {
+           Log.d(TAG, "onAuthSuccessRtmp")
+       }
+
+       override fun onConnectionFailedRtmp(reason: String) {
+           Log.d(TAG, "onConnectionFailedRtmp")
+           activity?.runOnUiThread { //Wait 5s and retry connect stream
+               if (rtmpAudio.reTry(5000, reason)) {
+                   dartMessenger?.send(DartMessenger.EventType.RTMP_RETRY, reason)
+               } else {
+                   dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Failed retry")
+                   rtmpAudio.stopStream()
+               }
+           }
+       }
+
+       override fun onConnectionStartedRtmp(rtmpUrl: String) {
+           Log.d(TAG, "onConnectionStartedRtmp")
+       }*/
+
+    companion object {
+        const val TAG = "AudioStreaming"
     }
 
-    override fun onNewBitrateRtmp(bitrate: Long) {
-        Log.d(TAG, "onNewBitrateRtmp: $bitrate")
-    }
-
-    override fun onDisconnectRtmp() {
-        Log.d(TAG, "onDisconnectRtmp")
-        activity?.runOnUiThread {
-            dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Disconnected")
-        }
-    }
-
-    override fun onAuthErrorRtmp() {
-        Log.d(TAG, "onAuthErrorRtmp")
+    override fun onAuthErrorRtsp() {
+        Log.d(TAG, "onAuthErrorRtsp")
         activity?.runOnUiThread {
             dartMessenger?.send(DartMessenger.EventType.ERROR, "Auth error")
         }
     }
 
-    override fun onAuthSuccessRtmp() {
-        Log.d(TAG, "onAuthSuccessRtmp")
+    override fun onAuthSuccessRtsp() {
+        Log.d(TAG, "onAuthSuccessRtsp")
     }
 
-    override fun onConnectionFailedRtmp(reason: String) {
-        Log.d(TAG, "onConnectionFailedRtmp")
+    override fun onConnectionFailedRtsp(reason: String) {
+        Log.d(TAG, "onConnectionFailedRtsp")
         activity?.runOnUiThread { //Wait 5s and retry connect stream
-            if (rtmpAudio.reTry(5000, reason)) {
+            if (rtspAudio.reTry(5000, reason)) {
                 dartMessenger?.send(DartMessenger.EventType.RTMP_RETRY, reason)
             } else {
                 dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Failed retry")
-                rtmpAudio.stopStream()
+                rtspAudio.stopStream()
             }
         }
     }
 
-    override fun onConnectionStartedRtmp(rtmpUrl: String) {
-        Log.d(TAG, "onConnectionStartedRtmp")
+    override fun onConnectionStartedRtsp(rtspUrl: String) {
+        Log.d(TAG, "onConnectionStartedRtsp")
     }
 
-    companion object {
-        const val TAG = "AudioStreaming"
+    override fun onConnectionSuccessRtsp() {
+        Log.d(TAG, "onConnectionSuccessRtsp")
+    }
+
+    override fun onDisconnectRtsp() {
+        Log.d(TAG, "onDisconnectRtsp")
+        activity?.runOnUiThread {
+            dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Disconnected")
+        }
+    }
+
+    override fun onNewBitrateRtsp(bitrate: Long) {
+        Log.d(TAG, "onNewBitrateRtsp: $bitrate")
     }
 }
