@@ -1,6 +1,9 @@
 package com.resideo.flutter_audio_streaming
 
 import android.app.Activity
+import android.content.Context
+import android.media.AudioManager
+import android.telephony.TelephonyManager
 import android.util.Log
 import com.pedro.rtplibrary.rtsp.RtspOnlyAudio
 import com.pedro.rtsp.utils.ConnectCheckerRtsp
@@ -62,6 +65,17 @@ class AudioStreaming(
             result.error("StartAudioStreaming", "Must specify a url.", null)
             return
         }
+
+        // Check if there's an active phone call
+        if (isPhoneCallActive()) {
+            result.error(
+                "PHONE_CALL_ACTIVE",
+                "Cannot start streaming during an active phone call",
+                null
+            )
+            return
+        }
+
         try {
             if (!rtspAudio.isStreaming) {
                 if (prepared || prepare()) {
@@ -152,6 +166,27 @@ class AudioStreaming(
        override fun onConnectionStartedRtmp(rtmpUrl: String) {
            Log.d(TAG, "onConnectionStartedRtmp")
        }*/
+
+    private fun isPhoneCallActive(): Boolean {
+        val telephonyManager = activity?.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        val audioManager = activity?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+
+        // Check telephony manager call state
+        val callState = telephonyManager?.callState ?: TelephonyManager.CALL_STATE_IDLE
+        if (callState != TelephonyManager.CALL_STATE_IDLE) {
+            Log.d(TAG, "Phone call detected via TelephonyManager: state=$callState")
+            return true
+        }
+
+        // Check if audio is being used for communication (call mode)
+        val audioMode = audioManager?.mode ?: AudioManager.MODE_NORMAL
+        if (audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_IN_COMMUNICATION) {
+            Log.d(TAG, "Phone call detected via AudioManager: mode=$audioMode")
+            return true
+        }
+
+        return false
+    }
 
     companion object {
         const val TAG = "AudioStreaming"
