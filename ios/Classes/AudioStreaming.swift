@@ -42,13 +42,22 @@ public class AudioStreaming {
         } catch {
             print("Got error in setup: ")
             print(error)
-            result(error)
+            result(FlutterError(
+                code: "AUDIO_SESSION_ERROR",
+                message: "Failed to configure audio session: \(error.localizedDescription)",
+                details: nil
+            ))
+            return
         }
         rtmpStream = RTMPStream(connection: rtmpConnection)
         rtmpStream.attachAudio(AVCaptureDevice.default(for: AVMediaType.audio)) { error in
             print("Got error in attachAudio: ")
             print(error)
-            result(error)
+            result(FlutterError(
+                code: "AUDIO_ATTACH_ERROR",
+                message: "Failed to attach audio device: \(error.localizedDescription)",
+                details: nil
+            ))
         }
         rtmpStream.audioSettings = [
             .muted: false, // mute audio
