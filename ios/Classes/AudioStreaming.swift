@@ -235,23 +235,17 @@ public class AudioStreaming {
             }
         }
 
-        // Method 4: Try to set category and check if it fails (might indicate phone call)
-        do {
-            // Try to activate the session - this will fail if phone is in use
-            try audioSession.setActive(true, options: [])
-            // If we get here, no phone call is active
-            // Deactivate immediately since we were just testing
-            try? audioSession.setActive(false, options: [])
-            return false
-        } catch let error as NSError {
-            // Error code 561017449 ('!int') means interruption (likely phone call)
-            if error.code == 561017449 {
-                print("Phone call detected: AVAudioSession interruption error")
+        // Method 4: Check if other audio is in use
+        // During a phone call, secondaryAudioShouldBeSilencedHint is true
+        if #available(iOS 8.0, *) {
+            if audioSession.secondaryAudioShouldBeSilencedHint {
+                print("Phone call detected: secondaryAudioShouldBeSilencedHint = true")
                 return true
             }
-            print("AVAudioSession error (not phone call): \(error)")
-            return false
         }
+
+        print("No phone call detected")
+        return false
     }
 }
 

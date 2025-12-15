@@ -173,6 +173,7 @@ class AudioStreaming(
 
         // Check telephony manager call state
         val callState = telephonyManager?.callState ?: TelephonyManager.CALL_STATE_IDLE
+        Log.d(TAG, "Checking phone call - TelephonyManager state: $callState")
         if (callState != TelephonyManager.CALL_STATE_IDLE) {
             Log.d(TAG, "Phone call detected via TelephonyManager: state=$callState")
             return true
@@ -180,11 +181,13 @@ class AudioStreaming(
 
         // Check if audio is being used for communication (call mode)
         val audioMode = audioManager?.mode ?: AudioManager.MODE_NORMAL
+        Log.d(TAG, "Checking phone call - AudioManager mode: $audioMode")
         if (audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_IN_COMMUNICATION) {
             Log.d(TAG, "Phone call detected via AudioManager: mode=$audioMode")
             return true
         }
 
+        Log.d(TAG, "No phone call detected")
         return false
     }
 
