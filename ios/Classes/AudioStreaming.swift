@@ -145,7 +145,21 @@ public class AudioStreaming {
     public func isPaused() -> Bool{
         return rtmpStream.paused
     }
-    
+
+    public func mute() {
+        rtmpStream.audioSettings = [
+            .muted: true,
+            .bitrate: 32 * 1000,
+        ]
+    }
+
+    public func unmute() {
+        rtmpStream.audioSettings = [
+            .muted: false,
+            .bitrate: 32 * 1000,
+        ]
+    }
+
     public func addAudioData(buffer: CMSampleBuffer) {
         rtmpStream.audioSettings = [
             .muted: false, // mute audio
