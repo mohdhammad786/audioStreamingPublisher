@@ -58,9 +58,19 @@ public class AudioStreaming {
     
     
     public func start(url: String, result: @escaping FlutterResult) {
+        // Check if there's an active phone call
+        if isPhoneCallActive() {
+            result(FlutterError(
+                code: "PHONE_CALL_ACTIVE",
+                message: "Cannot start streaming during an active phone call",
+                details: nil
+            ))
+            return
+        }
+
         rtmpConnection.addEventListener(.rtmpStatus, selector:#selector(rtmpStatusHandler), observer: self)
         rtmpConnection.addEventListener(.ioError, selector: #selector(rtmpErrorHandler), observer: self)
-        
+
         let uri = URL(string: url)
         self.name = uri?.pathComponents.last
         var bits = url.components(separatedBy: "/")
@@ -189,6 +199,25 @@ public class AudioStreaming {
         } catch {
             print("Error deactivating AVAudioSession: \(error)")
         }
+    }
+
+    private func isPhoneCallActive() -> Bool {
+        let audioSession = AVAudioSession.sharedInstance()
+
+        // Check if another app is using audio (like Phone app during a call)
+        if audioSession.isOtherAudioPlaying {
+            return true
+        }
+
+        // Check if audio session category indicates a call is active
+        // During a call, the system might set the category to .playAndRecord or .record
+        if #available(iOS 10.0, *) {
+            if audioSession.category == .record {
+                return true
+            }
+        }
+
+        return false
     }
 }
 
