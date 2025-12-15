@@ -17,6 +17,16 @@ public class AudioStreaming {
     private let myDelegate = AudioStreamingQoSDelegate()
     
     public func setup(result: @escaping FlutterResult){
+        // Check if there's an active phone call before setup
+        if isPhoneCallActive() {
+            result(FlutterError(
+                code: "PHONE_CALL_ACTIVE",
+                message: "Cannot initialize streaming during an active phone call",
+                details: nil
+            ))
+            return
+        }
+
         let session = AVAudioSession.sharedInstance()
         do {
             if #available(iOS 10.0, *) {
@@ -204,20 +214,44 @@ public class AudioStreaming {
     private func isPhoneCallActive() -> Bool {
         let audioSession = AVAudioSession.sharedInstance()
 
-        // Check if another app is using audio (like Phone app during a call)
+        // Method 1: Check if another app is using audio (like Phone app during a call)
         if audioSession.isOtherAudioPlaying {
+            print("Phone call detected: isOtherAudioPlaying = true")
             return true
         }
 
-        // Check if audio session category indicates a call is active
-        // During a call, the system might set the category to .playAndRecord or .record
-        if #available(iOS 10.0, *) {
-            if audioSession.category == .record {
+        // Method 2: Check audio session mode for phone calls
+        if audioSession.mode == .voiceChat || audioSession.mode == .videoChat {
+            print("Phone call detected: mode = voice/video chat")
+            return true
+        }
+
+        // Method 3: Check if audio route is to receiver (indicates phone call)
+        let currentRoute = audioSession.currentRoute
+        for output in currentRoute.outputs {
+            if output.portType == .builtInReceiver {
+                print("Phone call detected: output to built-in receiver")
                 return true
             }
         }
 
-        return false
+        // Method 4: Try to set category and check if it fails (might indicate phone call)
+        do {
+            // Try to activate the session - this will fail if phone is in use
+            try audioSession.setActive(true, options: [])
+            // If we get here, no phone call is active
+            // Deactivate immediately since we were just testing
+            try? audioSession.setActive(false, options: [])
+            return false
+        } catch let error as NSError {
+            // Error code 561017449 ('!int') means interruption (likely phone call)
+            if error.code == 561017449 {
+                print("Phone call detected: AVAudioSession interruption error")
+                return true
+            }
+            print("AVAudioSession error (not phone call): \(error)")
+            return false
+        }
     }
 }
 
