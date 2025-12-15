@@ -3,6 +3,7 @@ package com.resideo.flutter_audio_streaming
 import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
+import android.telephony.PhoneStateListener
 import android.telephony.TelephonyManager
 import android.util.Log
 import com.pedro.rtplibrary.rtsp.RtspOnlyAudio
@@ -23,6 +24,7 @@ class AudioStreaming(
     private var isStereo: Boolean? = false
     private var echoCanceler: Boolean? = false
     private var noiseSuppressor: Boolean? = false
+    private var phoneStateListener: PhoneStateListener? = null
 
     fun prepare(
         bitrate: Int?, sampleRate: Int?, isStereo: Boolean?, echoCanceler: Boolean?,
@@ -81,6 +83,10 @@ class AudioStreaming(
                 if (prepared || prepare()) {
                     // ready to start streaming
                     rtspAudio.startStream(url)
+
+                    // Register phone state listener AFTER stream starts
+                    registerPhoneStateListener()
+
                     val ret = hashMapOf<String, Any>()
                     ret["url"] = url
                     result.success(ret)
@@ -118,6 +124,14 @@ class AudioStreaming(
 
     fun stopStreaming(result: MethodChannel.Result) {
         try {
+            // Unregister phone state listener
+            phoneStateListener?.let {
+                val telephonyManager = activity?.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+                telephonyManager?.listen(it, PhoneStateListener.LISTEN_NONE)
+                phoneStateListener = null
+                Log.d(TAG, "PhoneStateListener unregistered")
+            }
+
             rtspAudio.stopStream()
             result.success(null)
         } catch (e: IllegalStateException) {
@@ -189,6 +203,71 @@ class AudioStreaming(
 
         Log.d(TAG, "No phone call detected")
         return false
+    }
+
+    private fun registerPhoneStateListener() {
+        if (phoneStateListener != null) {
+            Log.d(TAG, "PhoneStateListener already registered")
+            return
+        }
+
+        val telephonyManager = activity?.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        if (telephonyManager == null) {
+            Log.e(TAG, "TelephonyManager not available, cannot monitor phone calls")
+            return
+        }
+
+        phoneStateListener = object : PhoneStateListener() {
+            override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                super.onCallStateChanged(state, phoneNumber)
+
+                when (state) {
+                    TelephonyManager.CALL_STATE_RINGING -> {
+                        Log.d(TAG, "Phone ringing - muting stream")
+                        rtspAudio.disableAudio()
+                        activity?.runOnUiThread {
+                            dartMessenger?.send(
+                                DartMessenger.EventType.AUDIO_INTERRUPTED,
+                                "Phone call ringing"
+                            )
+                        }
+                    }
+
+                    TelephonyManager.CALL_STATE_OFFHOOK -> {
+                        Log.d(TAG, "Phone call active - muting stream")
+                        rtspAudio.disableAudio()
+                        activity?.runOnUiThread {
+                            dartMessenger?.send(
+                                DartMessenger.EventType.AUDIO_INTERRUPTED,
+                                "Phone call active"
+                            )
+                        }
+                    }
+
+                    TelephonyManager.CALL_STATE_IDLE -> {
+                        // Only unmute if we're actually streaming
+                        if (rtspAudio.isStreaming) {
+                            Log.d(TAG, "Phone call ended - unmuting stream")
+                            rtspAudio.enableAudio()
+                            activity?.runOnUiThread {
+                                dartMessenger?.send(
+                                    DartMessenger.EventType.AUDIO_RESUMED,
+                                    "Phone call ended, stream resumed"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        try {
+            telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
+            Log.d(TAG, "PhoneStateListener registered successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register PhoneStateListener: ${e.message}")
+            phoneStateListener = null
+        }
     }
 
     companion object {

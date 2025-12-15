@@ -26,6 +26,9 @@ public class SwiftFlutterAudioStreamingPlugin: NSObject, FlutterPlugin {
         result(nil)
     case "initializeStreaming":
         audioStreaming = AudioStreaming()
+        if let sink = SwiftFlutterAudioStreamingPlugin.eventSink {
+            audioStreaming?.setEventSink(sink)
+        }
         audioStreaming?.setup(result: result)
     case "startStreaming":
         // Makes sure arguments exists and is a Map

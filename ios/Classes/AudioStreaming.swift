@@ -15,6 +15,11 @@ public class AudioStreaming {
     private var name: String? = nil
     private var retries: Int = 0
     private let myDelegate = AudioStreamingQoSDelegate()
+    private var eventSink: FlutterEventSink?
+
+    public func setEventSink(_ sink: @escaping FlutterEventSink) {
+        self.eventSink = sink
+    }
     
     public func setup(result: @escaping FlutterResult){
         // Check if there's an active phone call before setup
@@ -73,9 +78,82 @@ public class AudioStreaming {
             ],
         ]
         result(nil)
+
+        // Register for audio interruptions (phone calls, alarms, etc.)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
     }
-    
-    
+
+    @objc private func handleInterruption(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            print("handleInterruption: Invalid notification")
+            return
+        }
+
+        print("Audio interruption: \(type == .began ? "BEGAN" : "ENDED")")
+
+        switch type {
+        case .began:
+            // Interruption began (phone call, alarm, etc.)
+            print("Pausing RTMP stream due to interruption")
+            rtmpStream.paused = true
+
+            eventSink?([
+                "event": "audio_interrupted",
+                "errorDescription": "Audio interrupted by phone call or other app"
+            ])
+
+        case .ended:
+            // Interruption ended
+            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
+                print("Interruption ended but no options provided")
+                eventSink?([
+                    "event": "audio_interrupted",
+                    "errorDescription": "Interruption ended, no resume options"
+                ])
+                return
+            }
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+
+            if options.contains(.shouldResume) {
+                print("Resuming RTMP stream after interruption")
+
+                // Reactivate audio session
+                do {
+                    try AVAudioSession.sharedInstance().setActive(true)
+                    rtmpStream.paused = false
+
+                    eventSink?([
+                        "event": "audio_resumed",
+                        "errorDescription": "Audio interruption ended, stream resumed"
+                    ])
+                } catch {
+                    print("Failed to resume after interruption: \(error)")
+                    eventSink?([
+                        "event": "error",
+                        "errorDescription": "Failed to resume stream after interruption: \(error.localizedDescription)"
+                    ])
+                }
+            } else {
+                print("Interruption ended but cannot auto-resume")
+                eventSink?([
+                    "event": "audio_interrupted",
+                    "errorDescription": "Interruption ended, manual resume may be required"
+                ])
+            }
+
+        @unknown default:
+            break
+        }
+    }
+
+
     public func start(url: String, result: @escaping FlutterResult) {
         // Check if there's an active phone call
         if isPhoneCallActive() {
@@ -204,6 +282,7 @@ public class AudioStreaming {
     }
 
     public func dispose(){
+        NotificationCenter.default.removeObserver(self)  // Remove interruption observer
         deactivateAudioSession()  // Final cleanup
         rtmpStream = nil
         rtmpConnection = RTMPConnection()
