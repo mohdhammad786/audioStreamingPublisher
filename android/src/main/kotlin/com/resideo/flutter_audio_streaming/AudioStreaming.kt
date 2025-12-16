@@ -1,52 +1,79 @@
 package com.resideo.flutter_audio_streaming
 
 import android.app.Activity
+import android.app.Application
 import android.content.Context
-import android.content.Intent
-import android.media.AudioManager
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.telephony.PhoneStateListener
-import android.telephony.TelephonyManager
 import android.util.Log
 import com.pedro.rtplibrary.rtsp.RtspOnlyAudio
 import com.pedro.rtsp.utils.ConnectCheckerRtsp
 import io.flutter.plugin.common.MethodChannel
 import java.io.IOException
-import android.app.Application
-import android.os.Bundle
-
 
 class AudioStreaming(
     private var activity: Activity? = null,
     private var dartMessenger: DartMessenger? = null
-) : ConnectCheckerRtsp, Application.ActivityLifecycleCallbacks, AudioManager.OnAudioFocusChangeListener {
+) : ConnectCheckerRtsp, Application.ActivityLifecycleCallbacks {
+
+    companion object {
+        private const val TAG = "AudioStreaming"
+        private const val INTERRUPTION_TIMEOUT_MS = 30000L // 30 seconds
+    }
 
     private val application: Application?
         get() = activity?.application
 
-    private var isInForeground: Boolean = false
-    private var pendingReconnect: Boolean = false
-
-
+    // RTSP Client
     private val rtspAudio: RtspOnlyAudio = RtspOnlyAudio(this)
-    private var prepared: Boolean = false
+
+    // State Management
+    private var currentState: StreamState = StreamState.IDLE
+    
+    // Configuration
     private var bitrate: Int? = null
     private var sampleRate: Int? = null
     private var isStereo: Boolean? = false
     private var echoCanceler: Boolean? = false
     private var noiseSuppressor: Boolean? = false
-    private var phoneStateListener: PhoneStateListener? = null
 
-    // Interruption handling properties
-    private val interruptionHandler = Handler(Looper.getMainLooper())
+    // Persistence
+    private var activeUrl: String? = null
+    private var pendingReconnectOnResume: Boolean = false
+    private var isInForeground: Boolean = false
+
+    // Managers
+    private var audioFocusManager: AudioFocusManager? = null
+    private var phoneCallManager: PhoneCallManager? = null
+
+    // Interruption Handling
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var interruptionRunnable: Runnable? = null
-    private var isInterrupted: Boolean = false
-    private var savedUrl: String? = null
-    private val interruptionTimeout: Long = 30000  // 30 seconds
 
-    // Audio focus state tracking
-    private var hasAudioFocus: Boolean = false
+    init {
+        // Initialize managers if activity is available, or wait until startStreaming
+        activity?.let { initializeManagers(it) }
+    }
+
+    private fun initializeManagers(context: Context) {
+        if (audioFocusManager == null) {
+            audioFocusManager = AudioFocusManager(context) {
+                // On Audio Focus Lost
+                Log.w(TAG, "Audio focus lost permanently - stopping stream")
+                stopStreaming(null) // Stop gracefully
+            }
+        }
+        if (phoneCallManager == null) {
+            phoneCallManager = PhoneCallManager(
+                context,
+                onInterruptionBegan = { handleInterruptionBegan() },
+                onInterruptionEnded = { handleInterruptionEnded() }
+            )
+        }
+    }
+
+    // --- Audio Configuration ---
 
     fun prepare(
         bitrate: Int?, sampleRate: Int?, isStereo: Boolean?, echoCanceler: Boolean?,
@@ -57,18 +84,10 @@ class AudioStreaming(
         this.isStereo = isStereo
         this.echoCanceler = echoCanceler
         this.noiseSuppressor = noiseSuppressor
-        prepared = true
-        return rtspAudio.prepareAudio(
-            bitrate ?: (128 * 1024),
-            sampleRate ?: 44100,
-            isStereo ?: true,
-            echoCanceler ?: false,
-            (noiseSuppressor ?: true)
-        )
+        return prepareInternal()
     }
 
-    private fun prepare(): Boolean {
-        prepared = true
+    private fun prepareInternal(): Boolean {
         return rtspAudio.prepareAudio(
             this.bitrate ?: (128 * 1024),
             this.sampleRate ?: 44100,
@@ -78,78 +97,91 @@ class AudioStreaming(
         )
     }
 
-    fun getStatistics(result: MethodChannel.Result) {
-        val ret = hashMapOf<String, Any>()
-        result.success(ret)
-    }
+    // --- Streaming Control ---
 
-    fun startStreaming(url: String?, result: MethodChannel.Result) {
-        println("AudioStreaming: StartAudioStreaming url: $url")
+    fun startStreaming(url: String?, result: MethodChannel.Result?) {
+        Log.d(TAG, "startStreaming: $url")
         if (url == null) {
-            result.error("StartAudioStreaming", "Must specify a url.", null)
+            result?.error("StartAudioStreaming", "Must specify a url.", null)
             return
         }
 
-        // Save URL for potential reconnection
-        savedUrl = url
+        // Ensure managers are ready
+        activity?.let { initializeManagers(it) }
 
-        // Check if there's an active phone call
-        if (isPhoneCallActive()) {
-            result.error(
-                "PHONE_CALL_ACTIVE",
-                "Cannot start streaming during an active phone call",
-                null
-            )
-            return
+        // Check for active call
+        if (phoneCallManager?.isCallActive() == true) {
+             result?.error("PHONE_CALL_ACTIVE", "Cannot start streaming during an active call", null)
+             return
         }
 
-        // Request Audio Focus FIRST (before acquiring microphone)
-        if (!requestAudioFocus()) {
-            result.error(
-                "AUDIO_FOCUS_DENIED",
-                "Cannot acquire audio focus - another app may be using audio",
-                null
-            )
-            return
+        // Request Audio Focus
+        if (audioFocusManager?.requestFocus() != true) {
+             result?.error("AUDIO_FOCUS_DENIED", "Cannot acquire audio focus", null)
+             return
         }
 
         try {
             if (!rtspAudio.isStreaming) {
-                if (prepared || prepare()) {
-                    // ready to start streaming
+                if (prepareInternal()) {
                     rtspAudio.startStream(url)
-
-                    // Start foreground service to prevent Android from killing the app
-                    activity?.let { context ->
-                        AudioStreamingForegroundService.start(context)
-                    }
-
-                    // Register phone state listener AFTER stream starts
-                    registerPhoneStateListener()
-
-                    // Register lifecycle callbacks
+                    
+                    // Update State
+                    currentState = StreamState.STREAMING
+                    activeUrl = url // Persist URL for reconnection
+                    
+                    // Start Services & Listeners
+                    activity?.let { AudioStreamingForegroundService.start(it) }
+                    phoneCallManager?.startMonitoring()
                     application?.registerActivityLifecycleCallbacks(this)
-                    isInForeground = true // Assume we are foregrounded when starting
+                    isInForeground = true
 
                     val ret = hashMapOf<String, Any>()
                     ret["url"] = url
-                    result.success(ret)
+                    result?.success(ret)
                 } else {
-                    // Prepare failed - abandon audio focus
-                    abandonAudioFocus()
-                    result.error(
-                        "AudioStreamingFailed",
-                        "Error preparing stream, This device cant do it",
-                        null
-                    )
-                    return
+                    audioFocusManager?.abandonFocus()
+                    result?.error("AudioStreamingFailed", "Error preparing stream", null)
                 }
+            } else {
+                 Log.w(TAG, "Already streaming, ignoring start request")
+                 result?.success(null)
             }
-        } catch (e: IOException) {
-            // Clean up audio focus on failure
-            abandonAudioFocus()
-            result.error("AudioStreamingFailed", e.message, null)
+        } catch (e: Exception) {
+            audioFocusManager?.abandonFocus()
+            result?.error("AudioStreamingFailed", e.message, null)
         }
+    }
+
+    fun stopStreaming(result: MethodChannel.Result?) {
+        Log.d(TAG, "stopStreaming requested")
+        
+        // Cancel any pending tasks
+        cancelInterruptionTimeout()
+        pendingReconnectOnResume = false
+        
+        // Clean up RTSP
+        try {
+            if (rtspAudio.isStreaming) {
+                rtspAudio.stopStream()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping stream: ${e.message}")
+        }
+
+        // Clean up Managers & Services
+        audioFocusManager?.abandonFocus()
+        phoneCallManager?.stopMonitoring()
+        
+        activity?.let { AudioStreamingForegroundService.stop(it) }
+        application?.unregisterActivityLifecycleCallbacks(this)
+
+        // Reset State
+        currentState = StreamState.IDLE
+        activeUrl = null // Crucial: clear URL only on explicit stop
+        
+        result?.success(null)
+        Log.d(TAG, "Stream stopped and state reset")
     }
 
     fun muteStreaming(result: MethodChannel.Result) {
@@ -170,620 +202,255 @@ class AudioStreaming(
         }
     }
 
-    fun stopStreaming(result: MethodChannel.Result) {
-        println("AudioStreaming: === stopStreaming START ===")
-        try {
-            // Cancel any pending interruption timeout
-            println("AudioStreaming: Cancelling interruption timeout")
-            cancelInterruptionTimeout()
-
-            println("AudioStreaming: Resetting state: isInterrupted = false, savedUrl = null")
-            isInterrupted = false
-            savedUrl = null
-
-            // Unregister phone state listener
-            phoneStateListener?.let {
-                println("AudioStreaming: Unregistering PhoneStateListener")
-                val telephonyManager = activity?.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
-                telephonyManager?.listen(it, PhoneStateListener.LISTEN_NONE)
-                phoneStateListener = null
-                println("AudioStreaming: PhoneStateListener unregistered")
-            }
-
-            // Unregister lifecycle callbacks
-            application?.unregisterActivityLifecycleCallbacks(this)
-
-            // Abandon Audio Focus
-            abandonAudioFocus()
-
-            println("AudioStreaming: Calling rtspAudio.stopStream()")
-            rtspAudio.stopStream()
-            println("AudioStreaming: rtspAudio.stopStream() completed")
-
-            // Stop foreground service
-            activity?.let { context ->
-                AudioStreamingForegroundService.stop(context)
-            }
-
-            result.success(null)
-            println("AudioStreaming: === stopStreaming END SUCCESS ===")
-        } catch (e: IllegalStateException) {
-            println("AudioStreaming ERROR: IllegalStateException in stopStreaming: ${e.message}")
-            e.printStackTrace()
-            result.error("StopAudioStreamingFailed", e.message, null)
-            println("AudioStreaming: === stopStreaming END FAILURE ===")
-        }
-    }
-
-    /*   override fun onConnectionSuccessRtmp() {
-           println("AudioStreaming: onConnectionSuccessRtmp")
-       }
-
-       override fun onNewBitrateRtmp(bitrate: Long) {
-           println("AudioStreaming: onNewBitrateRtmp: $bitrate")
-       }
-
-       override fun onDisconnectRtmp() {
-           println("AudioStreaming: onDisconnectRtmp")
-           activity?.runOnUiThread {
-               dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Disconnected")
-           }
-       }
-
-       override fun onAuthErrorRtmp() {
-           println("AudioStreaming: onAuthErrorRtmp")
-           activity?.runOnUiThread {
-               dartMessenger?.send(DartMessenger.EventType.ERROR, "Auth error")
-           }
-       }
-
-       override fun onAuthSuccessRtmp() {
-           println("AudioStreaming: onAuthSuccessRtmp")
-       }
-
-       override fun onConnectionFailedRtmp(reason: String) {
-           println("AudioStreaming: onConnectionFailedRtmp")
-           activity?.runOnUiThread { //Wait 5s and retry connect stream
-               if (rtmpAudio.reTry(5000, reason)) {
-                   dartMessenger?.send(DartMessenger.EventType.RTMP_RETRY, reason)
-               } else {
-                   dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Failed retry")
-                   rtmpAudio.stopStream()
-               }
-           }
-       }
-
-       override fun onConnectionStartedRtmp(rtmpUrl: String) {
-           println("AudioStreaming: onConnectionStartedRtmp")
-       }*/
-
-    private fun isPhoneCallActive(): Boolean {
-        val telephonyManager = activity?.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
-        val audioManager = activity?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-
-        // Check telephony manager call state
-        val callState = telephonyManager?.callState ?: TelephonyManager.CALL_STATE_IDLE
-        println("AudioStreaming: Checking phone call - TelephonyManager state: $callState")
-        if (callState != TelephonyManager.CALL_STATE_IDLE) {
-            println("AudioStreaming: Phone call detected via TelephonyManager: state=$callState")
-            return true
-        }
-
-        // Check if audio is being used for communication (call mode)
-        val audioMode = audioManager?.mode ?: AudioManager.MODE_NORMAL
-        println("AudioStreaming: Checking phone call - AudioManager mode: $audioMode")
-        if (audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_IN_COMMUNICATION) {
-            println("AudioStreaming: Phone call detected via AudioManager: mode=$audioMode")
-            return true
-        }
-
-        println("AudioStreaming: No phone call detected")
-        return false
-    }
-
-    private fun registerPhoneStateListener() {
-        if (phoneStateListener != null) {
-            println("AudioStreaming: PhoneStateListener already registered")
-            return
-        }
-
-        val telephonyManager = activity?.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
-        if (telephonyManager == null) {
-            println("AudioStreaming ERROR: TelephonyManager not available, cannot monitor phone calls")
-            return
-        }
-
-        phoneStateListener = object : PhoneStateListener() {
-            override fun onCallStateChanged(state: Int, phoneNumber: String?) {
-                super.onCallStateChanged(state, phoneNumber)
-
-                val stateString = when(state) {
-                    TelephonyManager.CALL_STATE_IDLE -> "IDLE"
-                    TelephonyManager.CALL_STATE_RINGING -> "RINGING"
-                    TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
-                    else -> "UNKNOWN($state)"
-                }
-
-                println("AudioStreaming: === PhoneStateListener.onCallStateChanged ===")
-                println("AudioStreaming: New state: $stateString")
-                println("AudioStreaming: isInterrupted: $isInterrupted")
-                println("AudioStreaming: isStreaming: ${rtspAudio.isStreaming}")
-
-                when (state) {
-                    TelephonyManager.CALL_STATE_RINGING,
-                    TelephonyManager.CALL_STATE_OFFHOOK -> {
-                        println("AudioStreaming: Phone call active - calling handleInterruptionBegan()")
-                        handleInterruptionBegan()
-                    }
-
-                    TelephonyManager.CALL_STATE_IDLE -> {
-                        println("AudioStreaming: Phone call ended - calling handleInterruptionEnded()")
-                        handleInterruptionEnded()
-                    }
-                }
-                println("AudioStreaming: === PhoneStateListener.onCallStateChanged END ===")
-            }
-        }
-
-        try {
-            telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
-            println("AudioStreaming: PhoneStateListener registered successfully")
-        } catch (e: Exception) {
-            println("AudioStreaming ERROR: Failed to register PhoneStateListener: ${e.message}")
-            phoneStateListener = null
-        }
-    }
+    // --- Interruption Logic ---
 
     private fun handleInterruptionBegan() {
-        println("AudioStreaming: === handleInterruptionBegan START ===")
-        println("AudioStreaming: isInterrupted: $isInterrupted")
-        println("AudioStreaming: rtspAudio.isStreaming: ${rtspAudio.isStreaming}")
-
-        if (isInterrupted) {
-            println("AudioStreaming: Already handling interruption - returning")
+        Log.i(TAG, "Interruption Began (Call Started)")
+        
+        if (currentState == StreamState.INTERRUPTED) {
+            Log.d(TAG, "Already interrupted, ignoring")
             return
         }
 
-        if (!rtspAudio.isStreaming) {
-            println("AudioStreaming: Not streaming, ignoring interruption - returning")
-            return
+        // We only care if we were actually streaming or preparing
+        if (currentState != StreamState.STREAMING && currentState != StreamState.PREPARING) {
+             Log.d(TAG, "Interruption ignored - not active (state=$currentState)")
+             return
         }
 
-        // Safety check: ensure activity exists
-        if (activity == null) {
-            println("AudioStreaming ERROR: Activity is null in handleInterruptionBegan")
-            return
-        }
-
-        isInterrupted = true
-        println("AudioStreaming: Set isInterrupted = true")
-        println("AudioStreaming: Phone call detected - gracefully stopping stream")
-
-        // 1. Fully stop the stream (releases microphone)
+        currentState = StreamState.INTERRUPTED
+        
+        // 1. Force Stop Stream (Releases Mic)
         try {
-            println("AudioStreaming: Calling rtspAudio.stopStream()...")
             rtspAudio.stopStream()
-            println("AudioStreaming: rtspAudio.stopStream() completed successfully")
-            println("AudioStreaming: After stop - isStreaming: ${rtspAudio.isStreaming}")
+            Log.d(TAG, "Stream stopped for interruption")
         } catch (e: Exception) {
-            println("AudioStreaming ERROR: Error stopping stream: ${e.message}")
-            e.printStackTrace()
+            Log.e(TAG, "Error stopping for interruption: ${e.message}")
         }
 
-        // Abandon Audio Focus (temporarily)
-        abandonAudioFocus()
+        // 2. Abandon Focus Temporarily
+        audioFocusManager?.abandonFocus()
 
-        // 2. Send AUDIO_INTERRUPTED event (NOT RTMP_STOPPED)
-        println("AudioStreaming: Sending AUDIO_INTERRUPTED event to Flutter")
+        // 3. Notify Flutter (Optional, UI update)
         activity?.runOnUiThread {
-            dartMessenger?.send(
-                DartMessenger.EventType.AUDIO_INTERRUPTED,
-                "Phone call detected - stream paused temporarily"
-            )
+            dartMessenger?.send(DartMessenger.EventType.AUDIO_INTERRUPTED, "Stream paused due to call")
         }
 
-        // 3. Start timeout (30 seconds)
-        println("AudioStreaming: Starting interruption timeout timer")
+        // 4. Start Buffer Timer
         startInterruptionTimeout()
-        println("AudioStreaming: === handleInterruptionBegan END ===")
     }
 
     private fun handleInterruptionEnded() {
-        println("AudioStreaming: === handleInterruptionEnded START ===")
-        println("AudioStreaming: isInterrupted: $isInterrupted")
+        Log.i(TAG, "Interruption Ended (Call Ended)")
 
-        if (!isInterrupted) {
-            println("AudioStreaming: Not in interrupted state - returning")
+        if (currentState != StreamState.INTERRUPTED) {
+            // If we weren't interrupted, nothing to do (e.g. call ended but we were already stopped)
+            Log.d(TAG, "Ignoring interruption end - state is $currentState")
             return
         }
 
-        println("AudioStreaming: Phone call ended - attempting reconnection")
-
-        // Cancel timeout
-        println("AudioStreaming: Cancelling interruption timeout")
+        // Cancel the timeout immediately
         cancelInterruptionTimeout()
 
-        // REMOVED DELAY - reconnect immediately like iOS
-        println("AudioStreaming: Checking foreground status before reconnection")
-
-        // CHECK FOREGROUND STATE
+        // Attempt Reconnection
         if (isInForeground && activity != null) {
-             println("AudioStreaming: App is in foreground - reconnecting now")
-             reconnectStream()
+            Log.d(TAG, "App in foreground, reconnecting immediately")
+            reconnectStream()
         } else {
-             println("AudioStreaming: App is in BACKGROUND or activity null - setting pendingReconnect = true")
-             pendingReconnect = true
-             isInterrupted = false  // Clear flag since we're deferring
+            Log.d(TAG, "App in background, deferring reconnection")
+            pendingReconnectOnResume = true
+            // State remains INTERRUPTED until resumed
         }
-
-        println("AudioStreaming: === handleInterruptionEnded END ===")
     }
 
     private fun startInterruptionTimeout() {
-        cancelInterruptionTimeout()  // Cancel any existing timeout
-
+        cancelInterruptionTimeout()
         interruptionRunnable = Runnable {
-            handleInterruptionTimeout()
+            Log.w(TAG, "Interruption timeout expired ($INTERRUPTION_TIMEOUT_MS ms) - Aborting reconnection")
+            handleReconnectionFailure("Stream stopped due to prolonged interruption")
         }
-
-        interruptionHandler.postDelayed(interruptionRunnable!!, interruptionTimeout)
-        println("AudioStreaming: Interruption timeout started (30 seconds)")
+        mainHandler.postDelayed(interruptionRunnable!!, INTERRUPTION_TIMEOUT_MS)
+        Log.d(TAG, "Interruption timer started: $INTERRUPTION_TIMEOUT_MS ms")
     }
 
     private fun cancelInterruptionTimeout() {
         interruptionRunnable?.let {
-            interruptionHandler.removeCallbacks(it)
+            mainHandler.removeCallbacks(it)
             interruptionRunnable = null
-        }
-    }
-
-    private fun handleInterruptionTimeout() {
-        println("AudioStreaming: Interruption timeout expired - giving up on reconnection")
-
-        isInterrupted = false
-        savedUrl = null
-
-        // Stop foreground service since we're giving up
-        activity?.let { context ->
-            AudioStreamingForegroundService.stop(context)
-        }
-
-        // Send RTMP_STOPPED event (timeout expired)
-        activity?.runOnUiThread {
-            dartMessenger?.send(
-                DartMessenger.EventType.RTMP_STOPPED,
-                "Stream stopped due to prolonged interruption"
-            )
+            Log.d(TAG, "Interruption timer cancelled")
         }
     }
 
     private fun reconnectStream() {
-        println("AudioStreaming: === reconnectStream START ===")
-
-        // Validate state BEFORE attempting reconnection
-        val url = savedUrl
+        val url = activeUrl
         if (url == null) {
-            println("AudioStreaming ERROR: No saved URL for reconnection")
-            isInterrupted = false
+            Log.e(TAG, "Cannot reconnect - activeUrl is null")
+            handleReconnectionFailure("Configuration lost")
             return
         }
 
-        if (activity == null) {
-            println("AudioStreaming ERROR: Activity is null, cannot reconnect")
-            isInterrupted = false
-            savedUrl = null
-            return
-        }
+        currentState = StreamState.RECONNECTING
 
-        if (!isInForeground) {
-            println("AudioStreaming: App in background, will reconnect when resumed")
-            pendingReconnect = true
-            return
-        }
-
-        println("AudioStreaming: Starting reconnection background thread for: $url")
-        
-        // Run reconnection on background thread to avoid blocking UI or NetworkOnMainThreadException
+        // Perform "Fresh" Connection on background thread
         Thread {
             try {
-                 println("AudioStreaming: [BG] Waiting 500ms before reconnecting...")
-                 Thread.sleep(500) // Stability delay
-                 
-                // CRITICAL: Ensure stream is fully stopped before restarting
+                Log.d(TAG, "Starting reconnection sequence...")
+                
+                // 1. Ensure clean slate
                 if (rtspAudio.isStreaming) {
-                    println("AudioStreaming: [BG] Stream still active during reconnect, forcing stop first")
-                    try {
-                        rtspAudio.stopStream()
-                        Thread.sleep(300)  // Wait for cleanup
-                        println("AudioStreaming: [BG] Forced stop complete")
-                    } catch (e: Exception) {
-                        println("AudioStreaming ERROR: [BG] Failed to stop active stream: ${e.message}")
-                    }
+                    try { rtspAudio.stopStream() } catch (e: Exception) {}
                 }
-
-                // Force re-prepare
-                println("AudioStreaming: [BG] Force re-preparing stream...")
-                prepared = false
-                // Note: prepare() might need to run on specific thread? 
-                // Usually prepare() is just setting params.
-                if (!rtspAudio.prepareAudio()) { 
-                    println("AudioStreaming ERROR: [BG] Failed to prepare stream")
-                    activity?.runOnUiThread { handleReconnectionFailure("Failed to prepare stream") }
-                    return@Thread
+                
+                // 2. Force Audio Prepare (Re-initializes buffers/encoders)
+                // Note: prepareAudio handles being called multiple times usually, 
+                // but checking constraints is good.
+                val prepared = prepareInternal()
+                if (!prepared) {
+                     Log.e(TAG, "Failed to re-prepare audio components")
+                     activity?.runOnUiThread { handleReconnectionFailure("Device prepare failed") }
+                     return@Thread
                 }
-                prepared = true
-                println("AudioStreaming: [BG] Stream prepared successfully")
-
-                // Request audio focus on Main Thread
+                
+                // 3. Acquire Focus on Main Thread
                 var focusGranted = false
-                val countdown = java.util.concurrent.CountDownLatch(1)
+                val latch = java.util.concurrent.CountDownLatch(1)
+                
                 activity?.runOnUiThread {
-                    println("AudioStreaming: [UI] Requesting audio focus...")
-                    focusGranted = requestAudioFocus()
-                    countdown.countDown()
+                    focusGranted = audioFocusManager?.requestFocus() == true
+                    latch.countDown()
                 }
-                countdown.await(2, java.util.concurrent.TimeUnit.SECONDS)
+                latch.await(2, java.util.concurrent.TimeUnit.SECONDS) // Safety wait
 
                 if (!focusGranted) {
-                    println("AudioStreaming ERROR: [BG] Failed to acquire audio focus")
-                    activity?.runOnUiThread { handleReconnectionFailure("Cannot acquire audio focus") }
+                    activity?.runOnUiThread { handleReconnectionFailure("Could not regain audio focus") }
                     return@Thread
                 }
 
-                // Restart stream
-                println("AudioStreaming: [BG] Calling rtspAudio.startStream($url)...")
+                // 4. Start RTSP Stream
+                Log.d(TAG, "Restarting RTSP stream to $url")
                 rtspAudio.startStream(url)
-                println("AudioStreaming: [BG] rtspAudio.startStream() completed")
-
-                // Update UI/State on Main Thread
-                activity?.runOnUiThread {
-                    println("AudioStreaming: [UI] Re-registering phone state listener...")
-                    registerPhoneStateListener()
-
-                    isInterrupted = false
-                    pendingReconnect = false
-                    println("AudioStreaming: [UI] Reconnection process finished (waiting for callback)")
-                }
-
+                
+                // State update happens in onConnectionSuccessRtsp
+                
             } catch (e: Exception) {
-                println("AudioStreaming ERROR: [BG] Exception during reconnection: ${e.message}")
-                e.printStackTrace()
-                activity?.runOnUiThread {
-                    handleReconnectionFailure("Reconnection failed: ${e.message}")
-                }
+                Log.e(TAG, "Reconnection exception: ${e.message}")
+                activity?.runOnUiThread { handleReconnectionFailure(e.message ?: "Unknown error") }
             }
         }.start()
     }
 
-    private fun handleReconnectionFailure(error: String) {
-        println("AudioStreaming ERROR: $error")
-
-        isInterrupted = false
-        savedUrl = null
-
-        // Clean up audio focus state
-        abandonAudioFocus()
-
-        // Stop foreground service since we're giving up
-        activity?.let { context ->
-            AudioStreamingForegroundService.stop(context)
-        }
-
+    private fun handleReconnectionFailure(reason: String) {
+        Log.e(TAG, "Reconnection failed: $reason")
+        
+        // Clean up normally
+        stopStreaming(null)
+        
+        // Send STOPPED event so UI knows we are done
         activity?.runOnUiThread {
-            dartMessenger?.send(
-                DartMessenger.EventType.RTMP_STOPPED,
-                error
-            )
+            dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, reason)
         }
     }
 
-    companion object {
-        const val TAG = "AudioStreaming"
+    // --- ConnectCheckerRtsp Callbacks ---
+
+    override fun onConnectionSuccessRtsp() {
+        Log.d(TAG, "RTSP Connection Successful")
+        
+        // Critical Fix: Do NOT clear activeUrl here!
+        // We keep it valid as long as we intend to be streaming.
+        
+        if (currentState == StreamState.RECONNECTING || currentState == StreamState.INTERRUPTED) {
+             Log.i(TAG, "Reconnection success - Sending RESUMED event")
+             activity?.runOnUiThread {
+                 dartMessenger?.send(DartMessenger.EventType.AUDIO_RESUMED, "Stream resumed")
+             }
+        }
+        
+        currentState = StreamState.STREAMING
+    }
+
+    override fun onConnectionFailedRtsp(reason: String) {
+        Log.e(TAG, "RTSP Connection Failed: $reason")
+        
+        if (currentState == StreamState.INTERRUPTED) {
+            Log.w(TAG, "Connection failed while interrupted (likely network switch) - ignoring for now")
+            return
+        }
+
+        // Retry logic could go here, or just fail
+        activity?.runOnUiThread {
+             if (rtspAudio.reTry(5000, reason)) {
+                 dartMessenger?.send(DartMessenger.EventType.RTMP_RETRY, reason)
+             } else {
+                 dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Failed retry")
+                 stopStreaming(null)
+             }
+        }
+    }
+
+    override fun onDisconnectRtsp() {
+        Log.d(TAG, "RTSP Disconnected")
+        
+        if (currentState == StreamState.INTERRUPTED || currentState == StreamState.RECONNECTING) {
+             Log.d(TAG, "Ignored explicit disconnect during interruption flow")
+             return
+        }
+        
+        // Normal disconnect
+        activity?.runOnUiThread {
+            dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Disconnected")
+        }
     }
 
     override fun onAuthErrorRtsp() {
-        println("AudioStreaming: onAuthErrorRtsp")
-        if (isInterrupted) {
-             println("AudioStreaming: Ignoring onAuthErrorRtsp because isInterrupted = true")
-             return
-        }
+        Log.e(TAG, "Auth Error")
         activity?.runOnUiThread {
             dartMessenger?.send(DartMessenger.EventType.ERROR, "Auth error")
         }
     }
 
     override fun onAuthSuccessRtsp() {
-        println("AudioStreaming: onAuthSuccessRtsp")
-    }
-
-    override fun onConnectionFailedRtsp(reason: String) {
-        println("AudioStreaming: onConnectionFailedRtsp")
-        if (isInterrupted) {
-             println("AudioStreaming: Ignoring onConnectionFailedRtsp because isInterrupted = true")
-             return
-        }
-        activity?.runOnUiThread { //Wait 5s and retry connect stream
-            if (rtspAudio.reTry(5000, reason)) {
-                dartMessenger?.send(DartMessenger.EventType.RTMP_RETRY, reason)
-            } else {
-                dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Failed retry")
-                rtspAudio.stopStream()
-            }
-        }
-    }
-
-    override fun onConnectionStartedRtsp(rtspUrl: String) {
-        println("AudioStreaming: onConnectionStartedRtsp")
-    }
-
-    override fun onConnectionSuccessRtsp() {
-        println("AudioStreaming: onConnectionSuccessRtsp")
-
-        // Always log connection success
-        println("AudioStreaming: RTSP connection successful")
-
-        // Check if this was a reconnection after interruption
-        if (savedUrl != null) {
-            println("AudioStreaming: Reconnection successful (savedUrl set) - sending AUDIO_RESUMED")
-
-            // Additional safety check
-            if (activity != null) {
-                activity?.runOnUiThread {
-                    dartMessenger?.send(
-                        DartMessenger.EventType.AUDIO_RESUMED,
-                        "Stream resumed after interruption"
-                    )
-                }
-                savedUrl = null
-            } else {
-                println("AudioStreaming ERROR: Activity is null in onConnectionSuccessRtsp, cannot send event")
-                savedUrl = null  // Clear it anyway
-            }
-        }
-    }
-
-    override fun onDisconnectRtsp() {
-        println("AudioStreaming: onDisconnectRtsp")
-        if (isInterrupted) {
-             println("AudioStreaming: Ignoring onDisconnectRtsp because isInterrupted = true")
-             return
-        }
-        activity?.runOnUiThread {
-            dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Disconnected")
-        }
+        Log.d(TAG, "Auth Success")
     }
 
     override fun onNewBitrateRtsp(bitrate: Long) {
-        println("AudioStreaming: onNewBitrateRtsp: $bitrate")
+        // Log.v(TAG, "Bitrate: $bitrate")
     }
 
-    // --- Lifecycle Callbacks ---
+    // --- Activity Lifecycle ---
+
     override fun onActivityResumed(activity: Activity) {
         if (activity === this.activity) {
-            println("AudioStreaming: onActivityResumed")
             isInForeground = true
-
-            if (pendingReconnect && savedUrl != null) {
-                println("AudioStreaming: Resumed with pendingReconnect=true and savedUrl set - attempting reconnection")
-                pendingReconnect = false
-
-                // Reconnect immediately (no delay needed - resources should be ready)
+            
+            if (pendingReconnectOnResume) {
+                Log.d(TAG, "Resumed with pending reconnect")
+                pendingReconnectOnResume = false
                 reconnectStream()
-            } else if (pendingReconnect && savedUrl == null) {
-                // Edge case: pending reconnect but URL was cleared (user stopped manually?)
-                println("AudioStreaming: Resumed with pendingReconnect=true but savedUrl=null, clearing flag")
-                pendingReconnect = false
-                isInterrupted = false
             }
         }
     }
 
     override fun onActivityPaused(activity: Activity) {
-        if (activity === this.activity) {
-            println("AudioStreaming: onActivityPaused")
-            isInForeground = false
-        }
-    }
-
-    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
-    override fun onActivityStarted(activity: Activity) {
-         if (activity === this.activity) {
-             isInForeground = true
-         }
-    }
-    override fun onActivityStopped(activity: Activity) {
          if (activity === this.activity) {
              isInForeground = false
          }
     }
-    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+
+    override fun onActivityStarted(activity: Activity) {
+        if (activity === this.activity) isInForeground = true
+    }
+
+    override fun onActivityStopped(activity: Activity) {
+        if (activity === this.activity) isInForeground = false
+    }
+
     override fun onActivityDestroyed(activity: Activity) {
         if (activity === this.activity) {
-            isInForeground = false
-            application?.unregisterActivityLifecycleCallbacks(this)
+            stopStreaming(null)
         }
     }
-
-    // --- Audio Focus ---
-    private fun requestAudioFocus(): Boolean {
-        val audioManager = activity?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-        if (audioManager == null) {
-            println("AudioStreaming ERROR: AudioManager is null, cannot request audio focus")
-            return false
-        }
-
-        val result = audioManager.requestAudioFocus(
-            this,
-            AudioManager.STREAM_MUSIC,
-            AudioManager.AUDIOFOCUS_GAIN
-        )
-
-        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
-
-        if (hasAudioFocus) {
-            println("AudioStreaming: Audio focus GRANTED")
-        } else {
-            Log.w(TAG, "AudioStreaming: Audio focus REJECTED")
-        }
-
-        return hasAudioFocus
-    }
-
-    private fun abandonAudioFocus() {
-        if (!hasAudioFocus) {
-            println("AudioStreaming: Audio focus not held, nothing to abandon")
-            return
-        }
-
-        val audioManager = activity?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-        audioManager?.abandonAudioFocus(this)
-        hasAudioFocus = false
-        println("AudioStreaming: Audio focus abandoned")
-    }
-
-    override fun onAudioFocusChange(focusChange: Int) {
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                // Permanent loss - another app took focus
-                println("AudioStreaming: Audio focus LOSS - stopping stream")
-                hasAudioFocus = false
-
-                // Stop streaming gracefully
-                if (rtspAudio.isStreaming && !isInterrupted) {
-                    activity?.runOnUiThread {
-                        try {
-                            rtspAudio.stopStream()
-
-                            // Stop foreground service
-                            activity?.let { context ->
-                                AudioStreamingForegroundService.stop(context)
-                            }
-
-                            dartMessenger?.send(
-                                DartMessenger.EventType.RTMP_STOPPED,
-                                "Audio focus lost - stopped by system"
-                            )
-                        } catch (e: Exception) {
-                            println("AudioStreaming ERROR: Failed to stop on focus loss: ${e.message}")
-                        }
-                    }
-                }
-            }
-
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                // Temporary loss (e.g., notification sound)
-                println("AudioStreaming: Audio focus LOSS_TRANSIENT - handled by phone state listener")
-                hasAudioFocus = false
-                // Phone call interruptions are already handled by PhoneStateListener
-                // This catches other temporary interruptions
-            }
-
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                // Focus regained
-                println("AudioStreaming: Audio focus GAIN")
-                hasAudioFocus = true
-                // Reconnection is handled by phone state listener
-            }
-        }
-    }
+    
+    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
 }
