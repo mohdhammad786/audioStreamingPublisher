@@ -465,73 +465,78 @@ class AudioStreaming(
             return
         }
 
-        println("AudioStreaming: Reconnecting to: $url")
-        println("AudioStreaming: Current state - prepared: $prepared, isStreaming: ${rtspAudio.isStreaming}")
+        println("AudioStreaming: Starting reconnection background thread for: $url")
+        
+        // Run reconnection on background thread to avoid blocking UI or NetworkOnMainThreadException
+        Thread {
+            try {
+                 println("AudioStreaming: [BG] Waiting 500ms before reconnecting...")
+                 Thread.sleep(500) // Stability delay
+                 
+                // CRITICAL: Ensure stream is fully stopped before restarting
+                if (rtspAudio.isStreaming) {
+                    println("AudioStreaming: [BG] Stream still active during reconnect, forcing stop first")
+                    try {
+                        rtspAudio.stopStream()
+                        Thread.sleep(300)  // Wait for cleanup
+                        println("AudioStreaming: [BG] Forced stop complete")
+                    } catch (e: Exception) {
+                        println("AudioStreaming ERROR: [BG] Failed to stop active stream: ${e.message}")
+                    }
+                }
 
-        try {
-            // CRITICAL: Ensure stream is fully stopped before restarting
-            if (rtspAudio.isStreaming) {
-                println("AudioStreaming: Stream still active during reconnect, forcing stop first")
-                try {
-                    rtspAudio.stopStream()
-                    Thread.sleep(300)  // Wait for cleanup
-                    println("AudioStreaming: Forced stop complete, stream is now inactive")
-                } catch (e: Exception) {
-                    println("AudioStreaming ERROR: Failed to stop active stream: ${e.message}")
-                    e.printStackTrace()
-                    handleReconnectionFailure("Cannot stop active stream: ${e.message}")
-                    return
+                // Force re-prepare
+                println("AudioStreaming: [BG] Force re-preparing stream...")
+                prepared = false
+                // Note: prepare() might need to run on specific thread? 
+                // Usually prepare() is just setting params.
+                if (!rtspAudio.prepareAudio()) { 
+                    println("AudioStreaming ERROR: [BG] Failed to prepare stream")
+                    activity?.runOnUiThread { handleReconnectionFailure("Failed to prepare stream") }
+                    return@Thread
+                }
+                prepared = true
+                println("AudioStreaming: [BG] Stream prepared successfully")
+
+                // Request audio focus on Main Thread
+                var focusGranted = false
+                val countdown = java.util.concurrent.CountDownLatch(1)
+                activity?.runOnUiThread {
+                    println("AudioStreaming: [UI] Requesting audio focus...")
+                    focusGranted = requestAudioFocus()
+                    countdown.countDown()
+                }
+                countdown.await(2, java.util.concurrent.TimeUnit.SECONDS)
+
+                if (!focusGranted) {
+                    println("AudioStreaming ERROR: [BG] Failed to acquire audio focus")
+                    activity?.runOnUiThread { handleReconnectionFailure("Cannot acquire audio focus") }
+                    return@Thread
+                }
+
+                // Restart stream
+                println("AudioStreaming: [BG] Calling rtspAudio.startStream($url)...")
+                rtspAudio.startStream(url)
+                println("AudioStreaming: [BG] rtspAudio.startStream() completed")
+
+                // Update UI/State on Main Thread
+                activity?.runOnUiThread {
+                    println("AudioStreaming: [UI] Re-registering phone state listener...")
+                    registerPhoneStateListener()
+
+                    isInterrupted = false
+                    pendingReconnect = false
+                    println("AudioStreaming: [UI] Reconnection process finished (waiting for callback)")
+                }
+
+            } catch (e: Exception) {
+                println("AudioStreaming ERROR: [BG] Exception during reconnection: ${e.message}")
+                e.printStackTrace()
+                activity?.runOnUiThread {
+                    handleReconnectionFailure("Reconnection failed: ${e.message}")
                 }
             }
-
-            // Force re-prepare (NO background thread - run on current thread like iOS)
-            println("AudioStreaming: Force re-preparing stream...")
-            prepared = false
-            if (!prepare()) {
-                println("AudioStreaming ERROR: Failed to prepare stream for reconnection")
-                handleReconnectionFailure("Failed to prepare stream")
-                return
-            }
-            println("AudioStreaming: Stream prepared successfully")
-
-            // Request audio focus BEFORE starting stream
-            println("AudioStreaming: Requesting audio focus for reconnection...")
-            if (!requestAudioFocus()) {
-                println("AudioStreaming ERROR: Failed to acquire audio focus for reconnection")
-                handleReconnectionFailure("Cannot acquire audio focus")
-                return
-            }
-
-            // Restart stream (NO background thread - matches iOS behavior)
-            println("AudioStreaming: Calling rtspAudio.startStream($url)...")
-            rtspAudio.startStream(url)
-            println("AudioStreaming: rtspAudio.startStream() completed")
-            println("AudioStreaming: After start - isStreaming: ${rtspAudio.isStreaming}")
-
-            // Re-register phone state listener
-            println("AudioStreaming: Re-registering phone state listener...")
-            registerPhoneStateListener()
-
-            // Reset state
-            isInterrupted = false
-            println("AudioStreaming: Reset state - isInterrupted: false")
-            pendingReconnect = false
-
-            /*
-               MATCHING iOS BEHAVIOR:
-               Do NOT send AUDIO_RESUMED here.
-               Do NOT clear savedUrl here.
-               Wait for onConnectionSuccessRtsp to confirm connection, then send event.
-            */
-
-            println("AudioStreaming: Reconnection initiated - waiting for callback")
-            println("AudioStreaming: === reconnectStream END SUCCESS ===")
-        } catch (e: Exception) {
-            println("AudioStreaming ERROR: Exception during reconnection: ${e.message}")
-            e.printStackTrace()
-            handleReconnectionFailure("Reconnection failed: ${e.message}")
-            println("AudioStreaming: === reconnectStream END FAILURE ===")
-        }
+        }.start()
     }
 
     private fun handleReconnectionFailure(error: String) {
@@ -545,7 +550,7 @@ class AudioStreaming(
 
         activity?.runOnUiThread {
             dartMessenger?.send(
-                DartMessenger.EventType.ERROR,
+                DartMessenger.EventType.RTMP_STOPPED,
                 error
             )
         }
