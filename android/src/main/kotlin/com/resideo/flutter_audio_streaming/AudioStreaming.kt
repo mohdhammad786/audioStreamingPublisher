@@ -12,7 +12,7 @@ import com.pedro.rtplibrary.rtsp.RtspOnlyAudio
 import com.pedro.rtsp.utils.ConnectCheckerRtsp
 import io.flutter.plugin.common.MethodChannel
 import java.io.IOException
-import android.util.Log
+
 
 class AudioStreaming(
     private var activity: Activity? = null,
