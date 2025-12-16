@@ -2,6 +2,7 @@ package com.resideo.flutter_audio_streaming
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
@@ -118,6 +119,11 @@ class AudioStreaming(
                     // ready to start streaming
                     rtspAudio.startStream(url)
 
+                    // Start foreground service to prevent Android from killing the app
+                    activity?.let { context ->
+                        AudioStreamingForegroundService.start(context)
+                    }
+
                     // Register phone state listener AFTER stream starts
                     registerPhoneStateListener()
 
@@ -193,6 +199,11 @@ class AudioStreaming(
             println("AudioStreaming: Calling rtspAudio.stopStream()")
             rtspAudio.stopStream()
             println("AudioStreaming: rtspAudio.stopStream() completed")
+
+            // Stop foreground service
+            activity?.let { context ->
+                AudioStreamingForegroundService.stop(context)
+            }
 
             result.success(null)
             println("AudioStreaming: === stopStreaming END SUCCESS ===")
@@ -432,6 +443,11 @@ class AudioStreaming(
         isInterrupted = false
         savedUrl = null
 
+        // Stop foreground service since we're giving up
+        activity?.let { context ->
+            AudioStreamingForegroundService.stop(context)
+        }
+
         // Send RTMP_STOPPED event (timeout expired)
         activity?.runOnUiThread {
             dartMessenger?.send(
@@ -547,6 +563,11 @@ class AudioStreaming(
 
         // Clean up audio focus state
         abandonAudioFocus()
+
+        // Stop foreground service since we're giving up
+        activity?.let { context ->
+            AudioStreamingForegroundService.stop(context)
+        }
 
         activity?.runOnUiThread {
             dartMessenger?.send(
@@ -732,6 +753,12 @@ class AudioStreaming(
                     activity?.runOnUiThread {
                         try {
                             rtspAudio.stopStream()
+
+                            // Stop foreground service
+                            activity?.let { context ->
+                                AudioStreamingForegroundService.stop(context)
+                            }
+
                             dartMessenger?.send(
                                 DartMessenger.EventType.RTMP_STOPPED,
                                 "Audio focus lost - stopped by system"
