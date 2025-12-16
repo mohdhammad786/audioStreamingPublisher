@@ -161,7 +161,7 @@ class AudioStreaming(
             result.success(null)
             println("AudioStreaming: === stopStreaming END SUCCESS ===")
         } catch (e: IllegalStateException) {
-            println("AudioStreaming ERROR: IllegalStateException in stopStreaming: ${e.message}", e)
+            println("AudioStreaming ERROR: IllegalStateException in stopStreaming: ${e.message}")
             e.printStackTrace()
             result.error("StopAudioStreamingFailed", e.message, null)
             println("AudioStreaming: === stopStreaming END FAILURE ===")
@@ -313,7 +313,7 @@ class AudioStreaming(
             println("AudioStreaming: rtspAudio.stopStream() completed successfully")
             println("AudioStreaming: After stop - isStreaming: ${rtspAudio.isStreaming}")
         } catch (e: Exception) {
-            println("AudioStreaming ERROR: Error stopping stream: ${e.message}", e)
+            println("AudioStreaming ERROR: Error stopping stream: ${e.message}")
             e.printStackTrace()
         }
 
