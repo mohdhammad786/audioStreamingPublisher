@@ -44,6 +44,9 @@ class AudioStreaming(
     private var savedUrl: String? = null
     private val interruptionTimeout: Long = 30000  // 30 seconds
 
+    // Audio focus state tracking
+    private var hasAudioFocus: Boolean = false
+
     fun prepare(
         bitrate: Int?, sampleRate: Int?, isStereo: Boolean?, echoCanceler: Boolean?,
         noiseSuppressor: Boolean?
@@ -99,6 +102,16 @@ class AudioStreaming(
             return
         }
 
+        // Request Audio Focus FIRST (before acquiring microphone)
+        if (!requestAudioFocus()) {
+            result.error(
+                "AUDIO_FOCUS_DENIED",
+                "Cannot acquire audio focus - another app may be using audio",
+                null
+            )
+            return
+        }
+
         try {
             if (!rtspAudio.isStreaming) {
                 if (prepared || prepare()) {
@@ -112,13 +125,12 @@ class AudioStreaming(
                     application?.registerActivityLifecycleCallbacks(this)
                     isInForeground = true // Assume we are foregrounded when starting
 
-                    // Request Audio Focus
-                    requestAudioFocus()
-
                     val ret = hashMapOf<String, Any>()
                     ret["url"] = url
                     result.success(ret)
                 } else {
+                    // Prepare failed - abandon audio focus
+                    abandonAudioFocus()
                     result.error(
                         "AudioStreamingFailed",
                         "Error preparing stream, This device cant do it",
@@ -128,6 +140,8 @@ class AudioStreaming(
                 }
             }
         } catch (e: IOException) {
+            // Clean up audio focus on failure
+            abandonAudioFocus()
             result.error("AudioStreamingFailed", e.message, null)
         }
     }
@@ -480,6 +494,14 @@ class AudioStreaming(
             }
             println("AudioStreaming: Stream prepared successfully")
 
+            // Request audio focus BEFORE starting stream
+            println("AudioStreaming: Requesting audio focus for reconnection...")
+            if (!requestAudioFocus()) {
+                println("AudioStreaming ERROR: Failed to acquire audio focus for reconnection")
+                handleReconnectionFailure("Cannot acquire audio focus")
+                return
+            }
+
             // Restart stream (NO background thread - matches iOS behavior)
             println("AudioStreaming: Calling rtspAudio.startStream($url)...")
             rtspAudio.startStream(url)
@@ -494,9 +516,6 @@ class AudioStreaming(
             isInterrupted = false
             println("AudioStreaming: Reset state - isInterrupted: false")
             pendingReconnect = false
-
-            // Request Audio Focus again
-            requestAudioFocus()
 
             /*
                MATCHING iOS BEHAVIOR:
@@ -520,6 +539,9 @@ class AudioStreaming(
 
         isInterrupted = false
         savedUrl = null
+
+        // Clean up audio focus state
+        abandonAudioFocus()
 
         activity?.runOnUiThread {
             dartMessenger?.send(
@@ -657,37 +679,78 @@ class AudioStreaming(
     }
 
     // --- Audio Focus ---
-    private fun requestAudioFocus() {
+    private fun requestAudioFocus(): Boolean {
         val audioManager = activity?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-        val result = audioManager?.requestAudioFocus(
+        if (audioManager == null) {
+            println("AudioStreaming ERROR: AudioManager is null, cannot request audio focus")
+            return false
+        }
+
+        val result = audioManager.requestAudioFocus(
             this,
             AudioManager.STREAM_MUSIC,
             AudioManager.AUDIOFOCUS_GAIN
         )
-        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+
+        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+
+        if (hasAudioFocus) {
             println("AudioStreaming: Audio focus GRANTED")
         } else {
             Log.w(TAG, "AudioStreaming: Audio focus REJECTED")
         }
+
+        return hasAudioFocus
     }
 
     private fun abandonAudioFocus() {
+        if (!hasAudioFocus) {
+            println("AudioStreaming: Audio focus not held, nothing to abandon")
+            return
+        }
+
         val audioManager = activity?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         audioManager?.abandonAudioFocus(this)
+        hasAudioFocus = false
         println("AudioStreaming: Audio focus abandoned")
     }
 
     override fun onAudioFocusChange(focusChange: Int) {
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS -> {
-                println("AudioStreaming: Audio focus LOSS")
-                // Usually we should stop, but depends on requirement. For now logging.
+                // Permanent loss - another app took focus
+                println("AudioStreaming: Audio focus LOSS - stopping stream")
+                hasAudioFocus = false
+
+                // Stop streaming gracefully
+                if (rtspAudio.isStreaming && !isInterrupted) {
+                    activity?.runOnUiThread {
+                        try {
+                            rtspAudio.stopStream()
+                            dartMessenger?.send(
+                                DartMessenger.EventType.RTMP_STOPPED,
+                                "Audio focus lost - stopped by system"
+                            )
+                        } catch (e: Exception) {
+                            println("AudioStreaming ERROR: Failed to stop on focus loss: ${e.message}")
+                        }
+                    }
+                }
             }
+
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                println("AudioStreaming: Audio focus LOSS_TRANSIENT")
+                // Temporary loss (e.g., notification sound)
+                println("AudioStreaming: Audio focus LOSS_TRANSIENT - handled by phone state listener")
+                hasAudioFocus = false
+                // Phone call interruptions are already handled by PhoneStateListener
+                // This catches other temporary interruptions
             }
+
             AudioManager.AUDIOFOCUS_GAIN -> {
+                // Focus regained
                 println("AudioStreaming: Audio focus GAIN")
+                hasAudioFocus = true
+                // Reconnection is handled by phone state listener
             }
         }
     }
