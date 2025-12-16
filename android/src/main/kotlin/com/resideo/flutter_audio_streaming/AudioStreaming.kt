@@ -358,6 +358,10 @@ class AudioStreaming(
     }
 
     // --- ConnectCheckerRtsp Callbacks ---
+    
+    override fun onConnectionStartedRtsp(rtspUrl: String) {
+        Log.i(TAG, "RTSP Connection Started: $rtspUrl")
+    }
 
     override fun onConnectionSuccessRtsp() {
         Log.d(TAG, "RTSP Connection Successful")
