@@ -96,6 +96,12 @@ class AudioStreaming(
             this.noiseSuppressor ?: true
         )
     }
+    
+    fun getStatistics(result: MethodChannel.Result) {
+        val ret = hashMapOf<String, Any>()
+        // TODO: Implement actual statistics from RtspOnlyAudio if available
+        result.success(ret)
+    }
 
     // --- Streaming Control ---
 
