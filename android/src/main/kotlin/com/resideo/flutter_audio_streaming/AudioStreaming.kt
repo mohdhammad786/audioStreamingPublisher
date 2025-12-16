@@ -324,6 +324,12 @@ class AudioStreaming(
             return
         }
 
+        // Safety check: ensure activity exists
+        if (activity == null) {
+            Log.e(TAG, "AudioStreaming ERROR: Activity is null in handleInterruptionBegan")
+            return
+        }
+
         isInterrupted = true
         Log.i(TAG, "AudioStreaming: Set isInterrupted = true")
         Log.i(TAG, "AudioStreaming: Phone call detected - gracefully stopping stream")
@@ -372,20 +378,17 @@ class AudioStreaming(
         Log.i(TAG, "AudioStreaming: Cancelling interruption timeout")
         cancelInterruptionTimeout()
 
-        // Add delay before reconnection attempt
-        Log.i(TAG, "AudioStreaming: Scheduling reconnection with 1 second delay")
-        Log.i(TAG, "AudioStreaming: Scheduling reconnection attempt (checking foreground status)")
-        
+        // REMOVED DELAY - reconnect immediately like iOS
+        Log.i(TAG, "AudioStreaming: Checking foreground status before reconnection")
+
         // CHECK FOREGROUND STATE
-        if (isInForeground) {
-             Log.i(TAG, "AudioStreaming: App is in foreground - scheduling reconnection in 1s")
-             interruptionHandler.postDelayed({
-                 Log.i(TAG, "AudioStreaming: Executing delayed reconnection")
-                 reconnectStream()
-             }, 1000)
+        if (isInForeground && activity != null) {
+             Log.i(TAG, "AudioStreaming: App is in foreground - reconnecting now")
+             reconnectStream()
         } else {
-             Log.i(TAG, "AudioStreaming: App is in BACKGROUND - setting pendingReconnect = true")
+             Log.i(TAG, "AudioStreaming: App is in BACKGROUND or activity null - setting pendingReconnect = true")
              pendingReconnect = true
+             isInterrupted = false  // Clear flag since we're deferring
         }
 
         Log.i(TAG, "AudioStreaming: === handleInterruptionEnded END ===")
@@ -426,6 +429,8 @@ class AudioStreaming(
 
     private fun reconnectStream() {
         Log.i(TAG, "AudioStreaming: === reconnectStream START ===")
+
+        // Validate state BEFORE attempting reconnection
         val url = savedUrl
         if (url == null) {
             Log.e(TAG, "AudioStreaming ERROR: No saved URL for reconnection")
@@ -433,70 +438,66 @@ class AudioStreaming(
             return
         }
 
+        if (activity == null) {
+            Log.e(TAG, "AudioStreaming ERROR: Activity is null, cannot reconnect")
+            isInterrupted = false
+            savedUrl = null
+            return
+        }
+
+        if (!isInForeground) {
+            Log.i(TAG, "AudioStreaming: App in background, will reconnect when resumed")
+            pendingReconnect = true
+            return
+        }
+
         Log.i(TAG, "AudioStreaming: Reconnecting to: $url")
         Log.i(TAG, "AudioStreaming: Current state - prepared: $prepared, isStreaming: ${rtspAudio.isStreaming}")
 
-        // CRITICAL FIX: Move ENTIRE reconnection to background thread
-        Thread {
-            try {
-                // NOW safe to sleep - not on Main thread!
-                Log.i(TAG, "AudioStreaming: [BG Thread] Waiting 500ms before reconnection...")
-                Thread.sleep(500)
-
-                Log.i(TAG, "AudioStreaming: [BG Thread] After wait - prepared: $prepared, isStreaming: ${rtspAudio.isStreaming}")
-
-                // Force re-prepare (still on background thread)
-                Log.i(TAG, "AudioStreaming: [BG Thread] Force re-preparing stream...")
-                prepared = false  // Force prepare
-                if (!prepare()) {
-                    Log.e(TAG, "AudioStreaming ERROR: [BG Thread] Failed to prepare stream for reconnection")
-                    activity?.runOnUiThread {
-                        handleReconnectionFailure("Failed to prepare stream")
-                    }
-                    return@Thread
-                }
-                Log.i(TAG, "AudioStreaming: [BG Thread] Stream prepared successfully")
-
-                // Restart stream (still on background thread)
-                Log.i(TAG, "AudioStreaming: [BG Thread] Calling rtspAudio.startStream($url)...")
-                rtspAudio.startStream(url)
-                Log.i(TAG, "AudioStreaming: [BG Thread] rtspAudio.startStream() completed")
-                Log.i(TAG, "AudioStreaming: [BG Thread] After start - isStreaming: ${rtspAudio.isStreaming}")
-
-                // Switch to Main thread ONLY for UI operations
-                activity?.runOnUiThread {
-                    // Re-register phone state listener
-                    Log.i(TAG, "AudioStreaming: Re-registering phone state listener...")
-                    registerPhoneStateListener()
-
-                    // Reset state
-                    isInterrupted = false
-                    Log.i(TAG, "AudioStreaming: Reset state - isInterrupted: false")
-                    pendingReconnect = false
-                    
-                    // Request Audio Focus again
-                    requestAudioFocus()
-
-                    /* 
-                       MATCHING iOS BEHAVIOR:
-                       Do NOT send AUDIO_RESUMED here. 
-                       Do NOT clear savedUrl here.
-                       Wait for onConnectionSuccessRtsp to confirm connection, then send event.
-                    */
-                    // savedUrl = null
-                    
-                    Log.i(TAG, "AudioStreaming: Reconnection initiated - waiting for callback")
-                    Log.i(TAG, "AudioStreaming: === reconnectStream END SUCCESS ===")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "AudioStreaming ERROR: [BG Thread] Exception during reconnection: ${e.message}")
-                e.printStackTrace()
-                activity?.runOnUiThread {
-                    handleReconnectionFailure("Reconnection failed: ${e.message}")
-                }
-                Log.i(TAG, "AudioStreaming: === reconnectStream END FAILURE ===")
+        try {
+            // Force re-prepare (NO background thread - run on current thread like iOS)
+            Log.i(TAG, "AudioStreaming: Force re-preparing stream...")
+            prepared = false
+            if (!prepare()) {
+                Log.e(TAG, "AudioStreaming ERROR: Failed to prepare stream for reconnection")
+                handleReconnectionFailure("Failed to prepare stream")
+                return
             }
-        }.start()  // Start the background thread
+            Log.i(TAG, "AudioStreaming: Stream prepared successfully")
+
+            // Restart stream (NO background thread - matches iOS behavior)
+            Log.i(TAG, "AudioStreaming: Calling rtspAudio.startStream($url)...")
+            rtspAudio.startStream(url)
+            Log.i(TAG, "AudioStreaming: rtspAudio.startStream() completed")
+            Log.i(TAG, "AudioStreaming: After start - isStreaming: ${rtspAudio.isStreaming}")
+
+            // Re-register phone state listener
+            Log.i(TAG, "AudioStreaming: Re-registering phone state listener...")
+            registerPhoneStateListener()
+
+            // Reset state
+            isInterrupted = false
+            Log.i(TAG, "AudioStreaming: Reset state - isInterrupted: false")
+            pendingReconnect = false
+
+            // Request Audio Focus again
+            requestAudioFocus()
+
+            /*
+               MATCHING iOS BEHAVIOR:
+               Do NOT send AUDIO_RESUMED here.
+               Do NOT clear savedUrl here.
+               Wait for onConnectionSuccessRtsp to confirm connection, then send event.
+            */
+
+            Log.i(TAG, "AudioStreaming: Reconnection initiated - waiting for callback")
+            Log.i(TAG, "AudioStreaming: === reconnectStream END SUCCESS ===")
+        } catch (e: Exception) {
+            Log.e(TAG, "AudioStreaming ERROR: Exception during reconnection: ${e.message}")
+            e.printStackTrace()
+            handleReconnectionFailure("Reconnection failed: ${e.message}")
+            Log.i(TAG, "AudioStreaming: === reconnectStream END FAILURE ===")
+        }
     }
 
     private fun handleReconnectionFailure(error: String) {
@@ -554,15 +555,27 @@ class AudioStreaming(
 
     override fun onConnectionSuccessRtsp() {
         Log.i(TAG, "AudioStreaming: onConnectionSuccessRtsp")
+
+        // Always log connection success
+        Log.i(TAG, "AudioStreaming: RTSP connection successful")
+
+        // Check if this was a reconnection after interruption
         if (savedUrl != null) {
             Log.i(TAG, "AudioStreaming: Reconnection successful (savedUrl set) - sending AUDIO_RESUMED")
-            activity?.runOnUiThread {
-                dartMessenger?.send(
-                    DartMessenger.EventType.AUDIO_RESUMED,
-                    "Stream resumed after interruption"
-                )
+
+            // Additional safety check
+            if (activity != null) {
+                activity?.runOnUiThread {
+                    dartMessenger?.send(
+                        DartMessenger.EventType.AUDIO_RESUMED,
+                        "Stream resumed after interruption"
+                    )
+                }
+                savedUrl = null
+            } else {
+                Log.e(TAG, "AudioStreaming ERROR: Activity is null in onConnectionSuccessRtsp, cannot send event")
+                savedUrl = null  // Clear it anyway
             }
-            savedUrl = null
         }
     }
 
@@ -586,14 +599,18 @@ class AudioStreaming(
         if (activity === this.activity) {
             Log.i(TAG, "AudioStreaming: onActivityResumed")
             isInForeground = true
-            
-            if (pendingReconnect) {
-                Log.i(TAG, "AudioStreaming: Resumed with pendingReconnect=true - attempting reconnection")
+
+            if (pendingReconnect && savedUrl != null) {
+                Log.i(TAG, "AudioStreaming: Resumed with pendingReconnect=true and savedUrl set - attempting reconnection")
                 pendingReconnect = false
-                // Add small delay to ensure surface/resources are ready?
-                interruptionHandler.postDelayed({
-                    reconnectStream()
-                }, 500)
+
+                // Reconnect immediately (no delay needed - resources should be ready)
+                reconnectStream()
+            } else if (pendingReconnect && savedUrl == null) {
+                // Edge case: pending reconnect but URL was cleared (user stopped manually?)
+                Log.i(TAG, "AudioStreaming: Resumed with pendingReconnect=true but savedUrl=null, clearing flag")
+                pendingReconnect = false
+                isInterrupted = false
             }
         }
     }
