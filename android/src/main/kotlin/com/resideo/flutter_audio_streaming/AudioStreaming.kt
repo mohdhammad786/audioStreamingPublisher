@@ -12,12 +12,19 @@ import com.pedro.rtplibrary.rtsp.RtspOnlyAudio
 import com.pedro.rtsp.utils.ConnectCheckerRtsp
 import io.flutter.plugin.common.MethodChannel
 import java.io.IOException
+import android.app.Application
+import android.os.Bundle
 
 
-class AudioStreaming(
     private var activity: Activity? = null,
     private var dartMessenger: DartMessenger? = null
-) : ConnectCheckerRtsp {
+) : ConnectCheckerRtsp, Application.ActivityLifecycleCallbacks, AudioManager.OnAudioFocusChangeListener {
+
+    private val application: Application?
+        get() = activity?.application
+
+    private var isInForeground: Boolean = false
+    private var pendingReconnect: Boolean = false
 
 
     private val rtspAudio: RtspOnlyAudio = RtspOnlyAudio(this)
@@ -100,6 +107,13 @@ class AudioStreaming(
                     // Register phone state listener AFTER stream starts
                     registerPhoneStateListener()
 
+                    // Register lifecycle callbacks
+                    application?.registerActivityLifecycleCallbacks(this)
+                    isInForeground = true // Assume we are foregrounded when starting
+
+                    // Request Audio Focus
+                    requestAudioFocus()
+
                     val ret = hashMapOf<String, Any>()
                     ret["url"] = url
                     result.success(ret)
@@ -152,8 +166,14 @@ class AudioStreaming(
                 val telephonyManager = activity?.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
                 telephonyManager?.listen(it, PhoneStateListener.LISTEN_NONE)
                 phoneStateListener = null
-                println("AudioStreaming: PhoneStateListener unregistered")
+                Log.i(TAG, "AudioStreaming: PhoneStateListener unregistered")
             }
+
+            // Unregister lifecycle callbacks
+            application?.unregisterActivityLifecycleCallbacks(this)
+
+            // Abandon Audio Focus
+            abandonAudioFocus()
 
             Log.i(TAG, "AudioStreaming: Calling rtspAudio.stopStream()")
             rtspAudio.stopStream()
@@ -318,6 +338,9 @@ class AudioStreaming(
             e.printStackTrace()
         }
 
+        // Abandon Audio Focus (temporarily)
+        abandonAudioFocus()
+
         // 2. Send AUDIO_INTERRUPTED event (NOT RTMP_STOPPED)
         Log.i(TAG, "AudioStreaming: Sending AUDIO_INTERRUPTED event to Flutter")
         activity?.runOnUiThread {
@@ -350,10 +373,19 @@ class AudioStreaming(
 
         // Add delay before reconnection attempt
         Log.i(TAG, "AudioStreaming: Scheduling reconnection with 1 second delay")
-        interruptionHandler.postDelayed({
-            Log.i(TAG, "AudioStreaming: Executing delayed reconnection")
-            reconnectStream()
-        }, 1000)  // 1 second delay
+        Log.i(TAG, "AudioStreaming: Scheduling reconnection attempt (checking foreground status)")
+        
+        // CHECK FOREGROUND STATE
+        if (isInForeground) {
+             Log.i(TAG, "AudioStreaming: App is in foreground - scheduling reconnection in 1s")
+             interruptionHandler.postDelayed({
+                 Log.i(TAG, "AudioStreaming: Executing delayed reconnection")
+                 reconnectStream()
+             }, 1000)
+        } else {
+             Log.i(TAG, "AudioStreaming: App is in BACKGROUND - setting pendingReconnect = true")
+             pendingReconnect = true
+        }
 
         Log.i(TAG, "AudioStreaming: === handleInterruptionEnded END ===")
     }
@@ -439,6 +471,10 @@ class AudioStreaming(
                     // Reset state
                     isInterrupted = false
                     Log.i(TAG, "AudioStreaming: Reset state - isInterrupted: false")
+                    pendingReconnect = false
+                    
+                    // Request Audio Focus again
+                    requestAudioFocus()
 
                     /* 
                        MATCHING iOS BEHAVIOR:
@@ -542,5 +578,84 @@ class AudioStreaming(
 
     override fun onNewBitrateRtsp(bitrate: Long) {
         Log.i(TAG, "AudioStreaming: onNewBitrateRtsp: $bitrate")
+    }
+
+    // --- Lifecycle Callbacks ---
+    override fun onActivityResumed(activity: Activity) {
+        if (activity === this.activity) {
+            Log.i(TAG, "AudioStreaming: onActivityResumed")
+            isInForeground = true
+            
+            if (pendingReconnect) {
+                Log.i(TAG, "AudioStreaming: Resumed with pendingReconnect=true - attempting reconnection")
+                pendingReconnect = false
+                // Add small delay to ensure surface/resources are ready?
+                interruptionHandler.postDelayed({
+                    reconnectStream()
+                }, 500)
+            }
+        }
+    }
+
+    override fun onActivityPaused(activity: Activity) {
+        if (activity === this.activity) {
+            Log.i(TAG, "AudioStreaming: onActivityPaused")
+            isInForeground = false
+        }
+    }
+
+    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+    override fun onActivityStarted(activity: Activity) {
+         if (activity === this.activity) {
+             isInForeground = true
+         }
+    }
+    override fun onActivityStopped(activity: Activity) {
+         if (activity === this.activity) {
+             isInForeground = false
+         }
+    }
+    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+    override fun onActivityDestroyed(activity: Activity) {
+        if (activity === this.activity) {
+            isInForeground = false
+            application?.unregisterActivityLifecycleCallbacks(this)
+        }
+    }
+
+    // --- Audio Focus ---
+    private fun requestAudioFocus() {
+        val audioManager = activity?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val result = audioManager?.requestAudioFocus(
+            this,
+            AudioManager.STREAM_MUSIC,
+            AudioManager.AUDIOFOCUS_GAIN
+        )
+        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            Log.i(TAG, "AudioStreaming: Audio focus GRANTED")
+        } else {
+            Log.w(TAG, "AudioStreaming: Audio focus REJECTED")
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        val audioManager = activity?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        audioManager?.abandonAudioFocus(this)
+        Log.i(TAG, "AudioStreaming: Audio focus abandoned")
+    }
+
+    override fun onAudioFocusChange(focusChange: Int) {
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                Log.i(TAG, "AudioStreaming: Audio focus LOSS")
+                // Usually we should stop, but depends on requirement. For now logging.
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                Log.i(TAG, "AudioStreaming: Audio focus LOSS_TRANSIENT")
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                Log.i(TAG, "AudioStreaming: Audio focus GAIN")
+            }
+        }
     }
 }
