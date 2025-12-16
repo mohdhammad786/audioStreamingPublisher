@@ -16,6 +16,7 @@ import android.app.Application
 import android.os.Bundle
 
 
+class AudioStreaming(
     private var activity: Activity? = null,
     private var dartMessenger: DartMessenger? = null
 ) : ConnectCheckerRtsp, Application.ActivityLifecycleCallbacks, AudioManager.OnAudioFocusChangeListener {
