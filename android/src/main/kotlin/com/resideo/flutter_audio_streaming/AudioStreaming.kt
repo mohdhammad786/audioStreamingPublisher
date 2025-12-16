@@ -3,6 +3,8 @@ package com.resideo.flutter_audio_streaming
 import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
+import android.os.Handler
+import android.os.Looper
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyManager
 import android.util.Log
@@ -25,6 +27,13 @@ class AudioStreaming(
     private var echoCanceler: Boolean? = false
     private var noiseSuppressor: Boolean? = false
     private var phoneStateListener: PhoneStateListener? = null
+
+    // Interruption handling properties
+    private val interruptionHandler = Handler(Looper.getMainLooper())
+    private var interruptionRunnable: Runnable? = null
+    private var isInterrupted: Boolean = false
+    private var savedUrl: String? = null
+    private val interruptionTimeout: Long = 30000  // 30 seconds
 
     fun prepare(
         bitrate: Int?, sampleRate: Int?, isStereo: Boolean?, echoCanceler: Boolean?,
@@ -67,6 +76,9 @@ class AudioStreaming(
             result.error("StartAudioStreaming", "Must specify a url.", null)
             return
         }
+
+        // Save URL for potential reconnection
+        savedUrl = url
 
         // Check if there's an active phone call
         if (isPhoneCallActive()) {
@@ -124,6 +136,11 @@ class AudioStreaming(
 
     fun stopStreaming(result: MethodChannel.Result) {
         try {
+            // Cancel any pending interruption timeout
+            cancelInterruptionTimeout()
+            isInterrupted = false
+            savedUrl = null
+
             // Unregister phone state listener
             phoneStateListener?.let {
                 val telephonyManager = activity?.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
@@ -222,40 +239,15 @@ class AudioStreaming(
                 super.onCallStateChanged(state, phoneNumber)
 
                 when (state) {
-                    TelephonyManager.CALL_STATE_RINGING -> {
-                        Log.d(TAG, "Phone ringing - muting stream")
-                        rtspAudio.disableAudio()
-                        activity?.runOnUiThread {
-                            dartMessenger?.send(
-                                DartMessenger.EventType.AUDIO_INTERRUPTED,
-                                "Phone call ringing"
-                            )
-                        }
-                    }
-
+                    TelephonyManager.CALL_STATE_RINGING,
                     TelephonyManager.CALL_STATE_OFFHOOK -> {
-                        Log.d(TAG, "Phone call active - muting stream")
-                        rtspAudio.disableAudio()
-                        activity?.runOnUiThread {
-                            dartMessenger?.send(
-                                DartMessenger.EventType.AUDIO_INTERRUPTED,
-                                "Phone call active"
-                            )
-                        }
+                        // Phone call active (ringing or answered)
+                        handleInterruptionBegan()
                     }
 
                     TelephonyManager.CALL_STATE_IDLE -> {
-                        // Only unmute if we're actually streaming
-                        if (rtspAudio.isStreaming) {
-                            Log.d(TAG, "Phone call ended - unmuting stream")
-                            rtspAudio.enableAudio()
-                            activity?.runOnUiThread {
-                                dartMessenger?.send(
-                                    DartMessenger.EventType.AUDIO_RESUMED,
-                                    "Phone call ended, stream resumed"
-                                )
-                            }
-                        }
+                        // Phone call ended
+                        handleInterruptionEnded()
                     }
                 }
             }
@@ -267,6 +259,142 @@ class AudioStreaming(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register PhoneStateListener: ${e.message}")
             phoneStateListener = null
+        }
+    }
+
+    private fun handleInterruptionBegan() {
+        if (isInterrupted) {
+            Log.d(TAG, "Already handling interruption")
+            return
+        }
+
+        if (!rtspAudio.isStreaming) {
+            Log.d(TAG, "Not streaming, ignoring interruption")
+            return
+        }
+
+        isInterrupted = true
+        Log.d(TAG, "Phone call detected - gracefully stopping stream")
+
+        // 1. Fully stop the stream (releases microphone)
+        try {
+            rtspAudio.stopStream()
+            Log.d(TAG, "Stream stopped successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping stream: ${e.message}")
+        }
+
+        // 2. Send AUDIO_INTERRUPTED event (NOT RTMP_STOPPED)
+        activity?.runOnUiThread {
+            dartMessenger?.send(
+                DartMessenger.EventType.AUDIO_INTERRUPTED,
+                "Phone call detected - stream paused temporarily"
+            )
+        }
+
+        // 3. Start timeout (30 seconds)
+        startInterruptionTimeout()
+    }
+
+    private fun handleInterruptionEnded() {
+        if (!isInterrupted) {
+            Log.d(TAG, "Not in interrupted state")
+            return
+        }
+
+        Log.d(TAG, "Phone call ended - attempting reconnection")
+
+        // Cancel timeout
+        cancelInterruptionTimeout()
+
+        // Attempt reconnection
+        reconnectStream()
+    }
+
+    private fun startInterruptionTimeout() {
+        cancelInterruptionTimeout()  // Cancel any existing timeout
+
+        interruptionRunnable = Runnable {
+            handleInterruptionTimeout()
+        }
+
+        interruptionHandler.postDelayed(interruptionRunnable!!, interruptionTimeout)
+        Log.d(TAG, "Interruption timeout started (30 seconds)")
+    }
+
+    private fun cancelInterruptionTimeout() {
+        interruptionRunnable?.let {
+            interruptionHandler.removeCallbacks(it)
+            interruptionRunnable = null
+        }
+    }
+
+    private fun handleInterruptionTimeout() {
+        Log.d(TAG, "Interruption timeout expired - giving up on reconnection")
+
+        isInterrupted = false
+        savedUrl = null
+
+        // Send RTMP_STOPPED event (timeout expired)
+        activity?.runOnUiThread {
+            dartMessenger?.send(
+                DartMessenger.EventType.RTMP_STOPPED,
+                "Stream stopped due to prolonged interruption"
+            )
+        }
+    }
+
+    private fun reconnectStream() {
+        val url = savedUrl
+        if (url == null) {
+            Log.e(TAG, "No saved URL for reconnection")
+            isInterrupted = false
+            return
+        }
+
+        Log.d(TAG, "Reconnecting to: $url")
+
+        try {
+            // Re-prepare if needed
+            if (!prepared) {
+                if (!prepare()) {
+                    handleReconnectionFailure("Failed to prepare stream")
+                    return
+                }
+            }
+
+            // Restart stream
+            rtspAudio.startStream(url)
+
+            // Reset state
+            isInterrupted = false
+            savedUrl = null
+
+            // Send AUDIO_RESUMED event
+            activity?.runOnUiThread {
+                dartMessenger?.send(
+                    DartMessenger.EventType.AUDIO_RESUMED,
+                    "Stream resumed after interruption"
+                )
+            }
+
+            Log.d(TAG, "Reconnection successful")
+        } catch (e: Exception) {
+            handleReconnectionFailure("Reconnection failed: ${e.message}")
+        }
+    }
+
+    private fun handleReconnectionFailure(error: String) {
+        Log.e(TAG, error)
+
+        isInterrupted = false
+        savedUrl = null
+
+        activity?.runOnUiThread {
+            dartMessenger?.send(
+                DartMessenger.EventType.ERROR,
+                error
+            )
         }
     }
 

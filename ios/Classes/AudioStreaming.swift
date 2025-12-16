@@ -17,6 +17,13 @@ public class AudioStreaming {
     private let myDelegate = AudioStreamingQoSDelegate()
     private var eventSink: FlutterEventSink?
 
+    // Interruption handling properties
+    private var interruptionTimer: DispatchSourceTimer?
+    private var isInterrupted: Bool = false
+    private var savedUrl: String?
+    private var savedName: String?
+    private let interruptionTimeout: TimeInterval = 30.0  // 30 seconds
+
     public func setEventSink(_ sink: @escaping FlutterEventSink) {
         self.eventSink = sink
     }
@@ -100,56 +107,154 @@ public class AudioStreaming {
 
         switch type {
         case .began:
-            // Interruption began (phone call, alarm, etc.)
-            print("Pausing RTMP stream due to interruption")
-            rtmpStream.paused = true
-
-            eventSink?([
-                "event": "audio_interrupted",
-                "errorDescription": "Audio interrupted by phone call or other app"
-            ])
+            handleInterruptionBegan()
 
         case .ended:
-            // Interruption ended
             guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
                 print("Interruption ended but no options provided")
-                eventSink?([
-                    "event": "audio_interrupted",
-                    "errorDescription": "Interruption ended, no resume options"
-                ])
                 return
             }
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
 
             if options.contains(.shouldResume) {
-                print("Resuming RTMP stream after interruption")
-
-                // Reactivate audio session
-                do {
-                    try AVAudioSession.sharedInstance().setActive(true)
-                    rtmpStream.paused = false
-
-                    eventSink?([
-                        "event": "audio_resumed",
-                        "errorDescription": "Audio interruption ended, stream resumed"
-                    ])
-                } catch {
-                    print("Failed to resume after interruption: \(error)")
-                    eventSink?([
-                        "event": "error",
-                        "errorDescription": "Failed to resume stream after interruption: \(error.localizedDescription)"
-                    ])
-                }
+                handleInterruptionEnded()
             } else {
                 print("Interruption ended but cannot auto-resume")
-                eventSink?([
-                    "event": "audio_interrupted",
-                    "errorDescription": "Interruption ended, manual resume may be required"
-                ])
             }
 
         @unknown default:
             break
+        }
+    }
+
+    private func handleInterruptionBegan() {
+        guard !isInterrupted else {
+            print("Already handling interruption")
+            return
+        }
+
+        isInterrupted = true
+        print("Gracefully disconnecting stream for interruption")
+
+        // 1. Store current connection info for reconnection
+        savedUrl = self.url
+        savedName = self.name
+
+        // 2. Gracefully close stream and connection
+        rtmpConnection.close()
+        deactivateAudioSession()
+
+        // 3. Send AUDIO_INTERRUPTED event (NOT RTMP_STOPPED)
+        DispatchQueue.main.async { [weak self] in
+            self?.eventSink?([
+                "event": "audio_interrupted",
+                "errorDescription": "Phone call detected - stream paused temporarily"
+            ])
+        }
+
+        // 4. Start timeout timer (30 seconds)
+        startInterruptionTimer()
+    }
+
+    private func handleInterruptionEnded() {
+        guard isInterrupted else {
+            print("Not in interrupted state")
+            return
+        }
+
+        // Cancel timeout timer
+        cancelInterruptionTimer()
+
+        print("Interruption ended - attempting reconnection")
+
+        // Attempt to reconnect
+        reconnectStream()
+    }
+
+    private func startInterruptionTimer() {
+        cancelInterruptionTimer()  // Cancel any existing timer
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now() + interruptionTimeout)
+        timer.setEventHandler { [weak self] in
+            self?.handleInterruptionTimeout()
+        }
+        timer.resume()
+
+        interruptionTimer = timer
+        print("Interruption timeout timer started (30 seconds)")
+    }
+
+    private func cancelInterruptionTimer() {
+        interruptionTimer?.cancel()
+        interruptionTimer = nil
+    }
+
+    private func handleInterruptionTimeout() {
+        print("Interruption timeout expired - giving up on reconnection")
+
+        isInterrupted = false
+        savedUrl = nil
+        savedName = nil
+
+        // Send RTMP_STOPPED event (timeout expired)
+        DispatchQueue.main.async { [weak self] in
+            self?.eventSink?([
+                "event": "rtmp_stopped",
+                "errorDescription": "Stream stopped due to prolonged interruption"
+            ])
+        }
+    }
+
+    private func reconnectStream() {
+        guard let savedUrl = savedUrl, let savedName = savedName else {
+            print("No saved connection info for reconnection")
+            isInterrupted = false
+            return
+        }
+
+        print("Reconnecting to: \(savedUrl)/\(savedName)")
+
+        // Re-setup audio session
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setActive(true)
+            print("AVAudioSession reactivated successfully")
+        } catch {
+            print("Failed to reactivate audio session: \(error)")
+            handleReconnectionFailure(error: "Audio session activation failed")
+            return
+        }
+
+        // Re-attach audio device
+        rtmpStream.attachAudio(AVCaptureDevice.default(for: AVMediaType.audio)) { [weak self] error in
+            print("Failed to reattach audio: \(error)")
+            self?.handleReconnectionFailure(error: "Failed to attach audio device")
+        }
+
+        // Reconnect RTMP
+        rtmpConnection.connect(savedUrl)
+
+        // The rtmpStatusHandler will receive .connectSuccess and call publish()
+        // We need to modify rtmpStatusHandler to handle reconnection
+
+        isInterrupted = false  // Reset flag
+
+        print("Reconnection initiated")
+    }
+
+    private func handleReconnectionFailure(error: String) {
+        print("Reconnection failed: \(error)")
+
+        isInterrupted = false
+        savedUrl = nil
+        savedName = nil
+
+        DispatchQueue.main.async { [weak self] in
+            self?.eventSink?([
+                "event": "error",
+                "errorDescription": "Reconnection failed: \(error)"
+            ])
         }
     }
 
@@ -193,8 +298,31 @@ public class AudioStreaming {
         
         switch code {
         case RTMPConnection.Code.connectSuccess.rawValue:
-            rtmpStream.publish(name)
             retries = 0
+
+            // Determine stream name (use saved name if reconnecting)
+            let streamName = savedName ?? name
+
+            guard let streamName = streamName else {
+                print("No stream name available for publishing")
+                return
+            }
+
+            rtmpStream.publish(streamName)
+
+            // If this was a reconnection, send AUDIO_RESUMED event
+            if savedUrl != nil {
+                print("Reconnection successful!")
+                savedUrl = nil
+                savedName = nil
+
+                DispatchQueue.main.async { [weak self] in
+                    self?.eventSink?([
+                        "event": "audio_resumed",
+                        "errorDescription": "Stream resumed after interruption"
+                    ])
+                }
+            }
             break
         case RTMPConnection.Code.connectFailed.rawValue, RTMPConnection.Code.connectClosed.rawValue:
             guard retries <= 3 else {
@@ -282,6 +410,7 @@ public class AudioStreaming {
     }
 
     public func dispose(){
+        cancelInterruptionTimer()  // Cancel any pending timer
         NotificationCenter.default.removeObserver(self)  // Remove interruption observer
         deactivateAudioSession()  // Final cleanup
         rtmpStream = nil
