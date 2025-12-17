@@ -320,8 +320,8 @@ class AudioStreaming(
             return
         }
 
-        // Only care if streaming
-        if (currentState != StreamState.STREAMING && currentState != StreamState.PREPARING) {
+        // Only care if streaming, preparing, or trying to reconnect
+        if (currentState != StreamState.STREAMING && currentState != StreamState.PREPARING && currentState != StreamState.RECONNECTING) {
             Log.d(TAG, "Network loss ignored - not active (state=$currentState)")
             return
         }
@@ -357,8 +357,8 @@ class AudioStreaming(
             return
         }
 
-        // We only care if we were actually streaming or preparing
-        if (currentState != StreamState.STREAMING && currentState != StreamState.PREPARING) {
+        // We only care if we were actually streaming, preparing, or reconnecting
+        if (currentState != StreamState.STREAMING && currentState != StreamState.PREPARING && currentState != StreamState.RECONNECTING) {
              Log.d(TAG, "Interruption ignored - not active (state=$currentState)")
              return
         }
@@ -583,7 +583,7 @@ class AudioStreaming(
         }
 
         // Check if this looks like a network issue (vs auth/server error)
-        if (isNetworkRelatedError(reason) && currentState == StreamState.STREAMING) {
+        if (isNetworkRelatedError(reason) && (currentState == StreamState.STREAMING || currentState == StreamState.RECONNECTING)) {
             Log.i(TAG, "RTSP failure appears network-related, triggering network interruption")
             currentInterruptionSource = InterruptionSource.NETWORK
             handleInterruptionBegan()
