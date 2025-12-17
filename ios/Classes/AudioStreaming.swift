@@ -24,7 +24,7 @@ public class AudioStreaming {
     private var savedUrl: String?
     private var savedName: String?
     private let phoneInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
-    private let phoneInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
+
     private let networkInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
     private var isStreamingActive: Bool = false
 
