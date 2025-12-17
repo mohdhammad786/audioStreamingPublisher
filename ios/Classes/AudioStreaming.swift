@@ -435,6 +435,15 @@ public class AudioStreaming {
         
         switch code {
         case RTMPConnection.Code.connectSuccess.rawValue:
+            // CRITICAL FIX: If we are currently interrupted (e.g. network lost again while connecting),
+            // we MUST ignore this success event. Processing it would clear savedUrl/source and leave us broken.
+            if isInterrupted {
+                print("Connection success arrived but we are in Interrupted state - ignoring to preserve state")
+                // Close the zombie connection to be safe
+                rtmpConnection.close()
+                return
+            }
+
             retries = 0
 
             // Determine stream name (use saved name if reconnecting)
