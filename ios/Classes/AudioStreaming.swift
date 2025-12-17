@@ -24,7 +24,9 @@ public class AudioStreaming {
     private var savedUrl: String?
     private var savedName: String?
     private let phoneInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
+    private let phoneInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
     private let networkInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
+    private var isStreamingActive: Bool = false
 
     // Interruption source tracking
     private enum InterruptionSource {
@@ -218,9 +220,10 @@ public class AudioStreaming {
             return
         }
 
-        // We care if we are connected OR if we are trying to reconnect (savedUrl != nil)
-        guard rtmpConnection.connected || savedUrl != nil else {
-            print("Not streaming or reconnecting, ignoring network loss")
+        // We care if we are INTENDING to stream (active or reconnecting)
+        // Do NOT rely on rtmpConnection.connected as it might already be false due to the error
+        guard isStreamingActive || savedUrl != nil else {
+            print("Not streaming or reconnecting (active=\(isStreamingActive)), ignoring network loss")
             return
         }
 
@@ -415,6 +418,7 @@ public class AudioStreaming {
 
         // Run this on the ui thread.
         DispatchQueue.main.async {
+            self.isStreamingActive = true
             self.rtmpConnection.connect(self.url ?? "frog")
             result(nil)
         }
@@ -573,6 +577,7 @@ public class AudioStreaming {
         stopNetworkMonitoring()
         currentInterruptionSource = .none
         isInterrupted = false
+        isStreamingActive = false
         networkLostDuringPhoneCall = false
         savedUrl = nil
         savedName = nil
