@@ -4,13 +4,16 @@ import UIKit
 public class SwiftFlutterAudioStreamingPlugin: NSObject, FlutterPlugin {
   static var eventSink : FlutterEventSink? = nil
   static var eventChannel : FlutterEventChannel? = nil
+  static var instance: SwiftFlutterAudioStreamingPlugin? = nil
   var audioStreaming: AudioStreaming? = nil
     
   public static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: "plugins.flutter.io/flutter_audio_streaming", binaryMessenger: registrar.messenger())
     eventChannel = FlutterEventChannel(name: "plugins.flutter.io/flutter_audio_streaming/streaming_event", binaryMessenger: registrar.messenger())
     eventChannel!.setStreamHandler(StreamHandlerEvent())
+    eventChannel!.setStreamHandler(StreamHandlerEvent())
     let instance = SwiftFlutterAudioStreamingPlugin()
+    SwiftFlutterAudioStreamingPlugin.instance = instance
     registrar.addMethodCallDelegate(instance, channel: channel)
     print("SwiftFlutterAudioStreamingPlugin: register")
   }
@@ -71,6 +74,8 @@ public class SwiftFlutterAudioStreamingPlugin: NSObject, FlutterPlugin {
 class StreamHandlerEvent: NSObject, FlutterStreamHandler {
     func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         SwiftFlutterAudioStreamingPlugin.eventSink = events
+        // Critical Fix: Ensure existing audioStreaming instance gets the sink
+        SwiftFlutterAudioStreamingPlugin.instance?.audioStreaming?.setEventSink(events)
         print("StreamHandlerEvent: onListen")
         return nil
     }
