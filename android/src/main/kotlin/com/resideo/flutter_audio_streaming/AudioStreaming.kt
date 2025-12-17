@@ -477,12 +477,24 @@ class AudioStreaming(
                     try { rtspAudio.stopStream() } catch (e: Exception) {}
                 }
 
+                // RACE GUARD: Check if we were stopped while ensuring clean slate
+                if (currentState != StreamState.RECONNECTING) {
+                    Log.w(TAG, "Reconnection aborted - state changed to $currentState")
+                    return@Thread
+                }
+
                 // 2. Force Audio Prepare (Re-initializes buffers/encoders)
                 val prepared = prepareInternal()
                 if (!prepared) {
                      Log.e(TAG, "Failed to re-prepare audio components")
                      runOnMainThreadSafely { handleReconnectionFailure("Device prepare failed") }
                      return@Thread
+                }
+                
+                // RACE GUARD: Check logic after prepare
+                if (currentState != StreamState.RECONNECTING) {
+                    Log.w(TAG, "Reconnection aborted after prepare - state changed to $currentState")
+                    return@Thread
                 }
 
                 // Check validity after prepare
@@ -527,6 +539,12 @@ class AudioStreaming(
                 // Final validity check before starting stream
                 if (!isActivityValid) {
                     Log.w(TAG, "Activity became invalid before starting stream")
+                    return@Thread
+                }
+                
+                // RACE GUARD: Final check before staring stream
+                if (currentState != StreamState.RECONNECTING) {
+                    Log.w(TAG, "Reconnection aborted before start - state changed to $currentState")
                     return@Thread
                 }
 
