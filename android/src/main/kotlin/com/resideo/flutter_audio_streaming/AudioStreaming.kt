@@ -200,42 +200,50 @@ class AudioStreaming(
     fun stopStreaming(result: MethodChannel.Result?) {
         Log.d(TAG, "stopStreaming requested - current state: $currentState")
 
-        // Guard against double-stop
-        if (currentState == StreamState.IDLE) {
-            Log.d(TAG, "Already stopped, ignoring")
-            result?.success(null)
-            return
-        }
-
-        // Cancel any pending tasks
-        cancelInterruptionTimeout()
-        pendingReconnectOnResume = false
-        networkLostDuringPhoneCall = false  // Reset edge case flag
-        
-        // Clean up RTSP
         try {
-            if (rtspAudio.isStreaming) {
-                rtspAudio.stopStream()
+            // Guard against double-stop
+            if (currentState == StreamState.IDLE) {
+                Log.d(TAG, "Already stopped, ignoring")
+                result?.success(null)
+                return
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping stream: ${e.message}")
+
+            // Cancel any pending tasks
+            cancelInterruptionTimeout()
+            pendingReconnectOnResume = false
+            networkLostDuringPhoneCall = false  // Reset edge case flag
+            
+            // Clean up RTSP
+            try {
+                if (rtspAudio.isStreaming) {
+                    rtspAudio.stopStream()
+                }
+            } catch (e:  Throwable) {
+                Log.e(TAG, "Error stopping stream: ${e.message}")
+            }
+
+            // Clean up Managers & Services
+            audioFocusManager?.abandonFocus()
+            phoneCallManager?.stopMonitoring()
+            networkMonitor?.stopMonitoring()
+
+            activity?.let { AudioStreamingForegroundService.stop(it) }
+            application?.unregisterActivityLifecycleCallbacks(this)
+
+            // Reset State
+            currentState = StreamState.IDLE
+            activeUrl = null // Crucial: clear URL only on explicit stop
+            currentInterruptionSource = InterruptionSource.NONE
+            
+            result?.success(null)
+            Log.d(TAG, "Stream stopped and state reset")
+        } catch (e: Throwable) {
+             Log.e(TAG, "Fatal error in stopStreaming: ${e.message}")
+             // Ensure state is reset even if crash occurs
+             currentState = StreamState.IDLE
+             activeUrl = null
+             result?.error("STOP_FAILED", e.message, null)
         }
-
-        // Clean up Managers & Services
-        audioFocusManager?.abandonFocus()
-        phoneCallManager?.stopMonitoring()
-        networkMonitor?.stopMonitoring()
-
-        activity?.let { AudioStreamingForegroundService.stop(it) }
-        application?.unregisterActivityLifecycleCallbacks(this)
-
-        // Reset State
-        currentState = StreamState.IDLE
-        activeUrl = null // Crucial: clear URL only on explicit stop
-        currentInterruptionSource = InterruptionSource.NONE
-        
-        result?.success(null)
-        Log.d(TAG, "Stream stopped and state reset")
     }
 
     fun muteStreaming(result: MethodChannel.Result) {
@@ -597,7 +605,8 @@ class AudioStreaming(
         val networkKeywords = listOf(
             "network", "timeout", "unreachable", "connection refused",
             "no route", "socket", "broken pipe", "failed to connect",
-            "host", "resolve", "dns", "ioexception"
+            "host", "resolve", "dns", "ioexception",
+            "software", "abort", "connection reset"
         )
         val lowerReason = reason.lowercase()
         return networkKeywords.any { lowerReason.contains(it) }
