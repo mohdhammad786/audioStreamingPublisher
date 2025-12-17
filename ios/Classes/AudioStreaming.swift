@@ -539,7 +539,7 @@ public class AudioStreaming {
         }
         
         let description = notification.name.rawValue
-        let description = notification.name.rawValue
+
         
         // CRITICAL FIX: Only trigger Network Lost if OS confirms offline.
         let isOsOffline = networkMonitor?.currentPath.status != .satisfied
