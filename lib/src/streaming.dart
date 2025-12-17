@@ -39,7 +39,8 @@ class StreamingController extends ValueNotifier<AudioValue> {
     } on PlatformException catch (e) {
       throw AudioStreamingException(e.code, e.message);
     }
-    _eventSubscription = EventChannel('plugins.flutter.io/flutter_audio_streaming/streaming_event')
+    _eventSubscription = EventChannel(
+            'plugins.flutter.io/flutter_audio_streaming/streaming_event')
         .receiveBroadcastStream()
         .listen(_listener);
     _creatingCompleter!.complete();
@@ -68,7 +69,8 @@ class StreamingController extends ValueNotifier<AudioValue> {
     }
     // Android: Event {eventType: rtmp_retry, errorDescription: BadName received}
     // iOS: Event {event: rtmp_retry, errorDescription: connection failed rtmpStatus}
-    final String eventType = map['eventType'] as String? ?? map['event'] as String;
+    final String eventType =
+        map['eventType'] as String? ?? map['event'] as String;
     final String errorDescription = map['errorDescription'];
     final Map<String, dynamic> uniEvent = <String, dynamic>{
       'eventType': eventType,
@@ -76,7 +78,8 @@ class StreamingController extends ValueNotifier<AudioValue> {
     };
     switch (eventType) {
       case 'error':
-        value = value.copyWith(errorDescription: errorDescription, event: uniEvent);
+        value =
+            value.copyWith(errorDescription: errorDescription, event: uniEvent);
         break;
       case 'rtmp_connected':
         value = value.copyWith(event: uniEvent);
@@ -131,14 +134,14 @@ class StreamingController extends ValueNotifier<AudioValue> {
   Future<void> mute() async {
     if (!value.isInitialized! || _isDisposed) {
       throw AudioStreamingException(
-        'Uninitialized CameraController',
-        'stopVideoStreaming was called on uninitialized CameraController',
+        'Uninitialized AudioController',
+        'muteAudioStreaming was called on uninitialized AudioController',
       );
     }
     if (!value.isStreaming!) {
       throw AudioStreamingException(
-        'No video is recording',
-        'stopVideoStreaming was called when no video is streaming.',
+        'No audio is streaming',
+        'muteAudioStreaming was called when no audio is streaming.',
       );
     }
     try {
@@ -153,14 +156,14 @@ class StreamingController extends ValueNotifier<AudioValue> {
   Future<void> unMute() async {
     if (!value.isInitialized! || _isDisposed) {
       throw AudioStreamingException(
-        'Uninitialized CameraController',
-        'stopVideoStreaming was called on uninitialized CameraController',
+        'Uninitialized AudioController',
+        'unMuteAudioStreaming was called on uninitialized AudioController',
       );
     }
     if (!value.isStreaming!) {
       throw AudioStreamingException(
-        'No video is recording',
-        'stopVideoStreaming was called when no video is streaming.',
+        'No audio is streaming',
+        'unMuteAudioStreaming was called when no audio is streaming.',
       );
     }
     try {
@@ -175,16 +178,11 @@ class StreamingController extends ValueNotifier<AudioValue> {
   Future<void> stop() async {
     if (!value.isInitialized! || _isDisposed) {
       throw AudioStreamingException(
-        'Uninitialized CameraController',
-        'stopVideoStreaming was called on uninitialized CameraController',
+        'Uninitialized AudioController',
+        'stopAudioStreaming was called on uninitialized AudioController',
       );
     }
-    if (!value.isStreaming!) {
-      throw AudioStreamingException(
-        'No video is recording',
-        'stopVideoStreaming was called when no video is streaming.',
-      );
-    }
+    // Allow stop even if not streaming to ensure cleanup
     try {
       value = value.copyWith(isStreaming: false);
       await channel.stopStreaming();
