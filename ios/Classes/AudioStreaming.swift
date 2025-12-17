@@ -33,6 +33,7 @@ public class AudioStreaming {
         case network
     }
     private var currentInterruptionSource: InterruptionSource = .none
+    private var networkLostDuringPhoneCall: Bool = false
 
     // Network monitoring properties
     private var networkMonitor: NWPathMonitor?
@@ -174,6 +175,23 @@ public class AudioStreaming {
             print("Ignoring phone end - not interrupted by phone (source=\(currentInterruptionSource))")
             return
         }
+        
+        // Check if network was lost during phone call
+        if networkLostDuringPhoneCall {
+            print("Phone ended but network still down - switching to network interruption")
+            networkLostDuringPhoneCall = false
+            currentInterruptionSource = .network
+            startInterruptionTimer()  // Restart with network timeout (30s)
+            
+            // Notify Flutter
+            DispatchQueue.main.async { [weak self] in
+                self?.eventSink?([
+                    "event": "network_interrupted",
+                    "errorDescription": "Network loss detected during phone call"
+                ])
+            }
+            return
+        }
 
         handleInterruptionEnded()
     }
@@ -183,12 +201,24 @@ public class AudioStreaming {
         print("Network Lost Detected")
 
         // Ignore if already interrupted by phone (phone takes precedence)
-        guard currentInterruptionSource != .phoneCall else {
-            print("Already interrupted by phone call, ignoring network loss")
+        // CRITICAL FIX: But if we are trying to RECONNECT from a phone call (savedUrl != nil and !isInterrupted),
+        // and network fails, we MUST switch to network interruption to avoid getting stuck.
+        if currentInterruptionSource == .phoneCall {
+            // Case 1: Reconnection Loop-hole (Call ended, trying to reconnect, but network failed)
+            if savedUrl != nil && !isInterrupted {
+                print("Network lost during reconnection from phone - switching to network interruption")
+                currentInterruptionSource = .network
+                handleInterruptionBegan()
+                return
+            }
+            
+            // Case 2: Network lost during active call
+            print("Already interrupted by phone call, flagging network loss for later")
+            networkLostDuringPhoneCall = true
             return
         }
 
-        // We care if we are connected OR if we are trying to reconnect (savedUrl exists)
+        // We care if we are connected OR if we are trying to reconnect (savedUrl != nil)
         guard rtmpConnection.connected || savedUrl != nil else {
             print("Not streaming or reconnecting, ignoring network loss")
             return
@@ -292,6 +322,7 @@ public class AudioStreaming {
         print("Interruption timeout expired - giving up on reconnection")
 
         isInterrupted = false
+        currentInterruptionSource = .none // Reset source
         savedUrl = nil
         savedName = nil
 
@@ -542,6 +573,7 @@ public class AudioStreaming {
         stopNetworkMonitoring()
         currentInterruptionSource = .none
         isInterrupted = false
+        networkLostDuringPhoneCall = false
         savedUrl = nil
         savedName = nil
         rtmpConnection.close()
