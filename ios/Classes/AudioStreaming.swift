@@ -259,6 +259,7 @@ public class AudioStreaming {
         savedName = self.name
 
         // 2. Gracefully close stream and connection
+        rtmpStream.attachAudio(nil) // Explicitly detach audio to ensure clean state
         rtmpConnection.close()
         deactivateAudioSession()
 
@@ -492,11 +493,25 @@ public class AudioStreaming {
                 return
             }
             retries += 1
-            Thread.sleep(forTimeInterval: pow(2.0, Double(retries)))
-            rtmpConnection.connect(url!)
-            if SwiftFlutterAudioStreamingPlugin.eventSink != nil {
-                SwiftFlutterAudioStreamingPlugin.eventSink!(["event" : "rtmp_retry",
-                           "errorDescription" : "connection failed " + e.type.rawValue])
+            
+            // Blocking sleep on Main Thread creates deadlocks! Use asyncAfter instead.
+            let delay = pow(2.0, Double(retries))
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self else { return }
+                
+                // Don't retry if we've entered interruption mode (e.g. network lost during wait)
+                if self.isInterrupted {
+                     print("Retry aborted - entered interrupted state")
+                     return
+                }
+                
+                print("Retrying connection (attempt \(self.retries))...")
+                self.rtmpConnection.connect(self.url ?? "")
+                
+                 if SwiftFlutterAudioStreamingPlugin.eventSink != nil {
+                    SwiftFlutterAudioStreamingPlugin.eventSink!(["event" : "rtmp_retry",
+                               "errorDescription" : "connection failed " + e.type.rawValue])
+                }
             }
             break
         default:
@@ -525,11 +540,19 @@ public class AudioStreaming {
             return
         }
         retries += 1
-        Thread.sleep(forTimeInterval: pow(2.0, Double(retries)))
-        rtmpConnection.connect(url!)
-        if SwiftFlutterAudioStreamingPlugin.eventSink != nil {
-            SwiftFlutterAudioStreamingPlugin.eventSink!(["event" : "rtmp_retry",
-                   "errorDescription" : "rtmp disconnected"])
+        
+        let delay = pow(2.0, Double(retries))
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+             guard let self = self else { return }
+             if self.isInterrupted { return }
+             
+             print("Retrying connection (attempt \(self.retries))...")
+             self.rtmpConnection.connect(self.url ?? "")
+             
+             if SwiftFlutterAudioStreamingPlugin.eventSink != nil {
+                SwiftFlutterAudioStreamingPlugin.eventSink!(["event" : "rtmp_retry",
+                       "errorDescription" : "rtmp disconnected"])
+            }
         }
     }
 
