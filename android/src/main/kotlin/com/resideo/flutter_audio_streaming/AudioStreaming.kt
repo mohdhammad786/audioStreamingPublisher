@@ -67,15 +67,24 @@ class AudioStreaming(
 
     private fun initializeManagers(context: Context) {
         if (audioFocusManager == null) {
-            audioFocusManager = AudioFocusManager(context) {
-                // On Audio Focus Lost
-                if (currentState != StreamState.INTERRUPTED && currentState != StreamState.RECONNECTING) {
-                    Log.w(TAG, "Audio focus lost permanently - stopping stream")
-                    stopStreaming(null) // Stop gracefully
-                } else {
-                    Log.i(TAG, "Audio focus lost permanently but currently interrupted/reconnecting - ignoring stop")
+            audioFocusManager = AudioFocusManager(
+                context,
+                onFocusLost = {
+                    // On Audio Focus Lost (Permanent)
+                    if (currentState != StreamState.INTERRUPTED && currentState != StreamState.RECONNECTING) {
+                        Log.w(TAG, "Audio focus lost permanently - stopping stream")
+                        stopStreaming(null) // Stop gracefully
+                    } else {
+                        Log.i(TAG, "Audio focus lost permanently but currently interrupted/reconnecting - ignoring stop")
+                    }
+                },
+                onFocusLostTransient = {
+                    // On Audio Focus Lost (Transient) - Treat as Phone Interruption
+                    // This is faster than PhoneStateListener for incoming calls
+                    Log.i(TAG, "Transient focus loss detected - triggering interruption")
+                    handlePhoneInterruptionBegan()
                 }
-            }
+            )
         }
         if (phoneCallManager == null) {
             phoneCallManager = PhoneCallManager(
