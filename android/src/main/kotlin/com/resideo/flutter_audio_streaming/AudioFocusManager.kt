@@ -72,14 +72,11 @@ class AudioFocusManager(
                 onFocusLost()
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                Log.i(TAG, "Transient focus loss (notification/call?)")
-                // Usually we might pause here, but for RTSP live streaming, 
-                // we treat transient loss (like a call) same as interruption logic handled by PhoneStateListener.
-                // However, strictly speaking, we could also stop here. 
-                // Since PhoneStateListener handles calls specifically (and faster usually for incoming rings),
-                // we'll mostly rely on that for calls, but this is a safety net.
-                hasFocus = false
-                onFocusLost() 
+                Log.i(TAG, "Transient focus loss (notification/call?) - IGNORING")
+                // We purposefully ignore transient loss here. 
+                // 1. If it's a phone call, PhoneStateListener handles it nicely (pausing stream).
+                // 2. If we stop here, we lose the activeUrl and cannot resume.
+                // 3. Android might lower volume automatically (ducking), which is fine.
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
                 Log.i(TAG, "Focus gained")

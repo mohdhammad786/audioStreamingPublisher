@@ -20,7 +20,7 @@ class AudioStreaming(
     companion object {
         private const val TAG = "AudioStreaming"
         private const val PHONE_INTERRUPTION_TIMEOUT_MS = 30000L // 30 seconds
-        private const val NETWORK_INTERRUPTION_TIMEOUT_MS = 25000L // 25 seconds
+        private const val NETWORK_INTERRUPTION_TIMEOUT_MS = 30000L // 30 seconds
     }
 
     // Context and lifecycle management
@@ -69,8 +69,12 @@ class AudioStreaming(
         if (audioFocusManager == null) {
             audioFocusManager = AudioFocusManager(context) {
                 // On Audio Focus Lost
-                Log.w(TAG, "Audio focus lost permanently - stopping stream")
-                stopStreaming(null) // Stop gracefully
+                if (currentState != StreamState.INTERRUPTED && currentState != StreamState.RECONNECTING) {
+                    Log.w(TAG, "Audio focus lost permanently - stopping stream")
+                    stopStreaming(null) // Stop gracefully
+                } else {
+                    Log.i(TAG, "Audio focus lost permanently but currently interrupted/reconnecting - ignoring stop")
+                }
             }
         }
         if (phoneCallManager == null) {
@@ -470,24 +474,36 @@ class AudioStreaming(
                     return@Thread
                 }
 
-                // 3. Acquire Focus on Main Thread
+                // 3. Acquire Focus on Main Thread (with Retry)
                 var focusGranted = false
-                val latch = java.util.concurrent.CountDownLatch(1)
-
-                runOnMainThreadSafely {
-                    if (isActivityValid) {
-                        focusGranted = audioFocusManager?.requestFocus() == true
+                val maxRetries = 5
+                
+                for (attempt in 1..maxRetries) {
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    
+                    runOnMainThreadSafely {
+                        if (isActivityValid) {
+                            focusGranted = audioFocusManager?.requestFocus() == true
+                        }
+                        latch.countDown()
                     }
-                    latch.countDown()
-                }
 
-                if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
-                    Log.e(TAG, "Timeout waiting for focus request")
-                    return@Thread
+                    if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                        Log.e(TAG, "Timeout waiting for focus request (attempt $attempt)")
+                        continue
+                    }
+
+                    if (focusGranted) {
+                        Log.d(TAG, "Audio focus acquired on attempt $attempt")
+                        break
+                    }
+                    
+                    Log.w(TAG, "Failed to acquire audio focus (attempt $attempt) - retrying...")
+                    try { Thread.sleep(500) } catch (e: InterruptedException) { break }
                 }
 
                 if (!focusGranted) {
-                    runOnMainThreadSafely { handleReconnectionFailure("Could not regain audio focus") }
+                    runOnMainThreadSafely { handleReconnectionFailure("Could not regain audio focus after $maxRetries attempts") }
                     return@Thread
                 }
 
@@ -580,7 +596,8 @@ class AudioStreaming(
     private fun isNetworkRelatedError(reason: String): Boolean {
         val networkKeywords = listOf(
             "network", "timeout", "unreachable", "connection refused",
-            "no route", "socket", "broken pipe", "failed to connect"
+            "no route", "socket", "broken pipe", "failed to connect",
+            "host", "resolve", "dns", "ioexception"
         )
         val lowerReason = reason.lowercase()
         return networkKeywords.any { lowerReason.contains(it) }
