@@ -235,8 +235,16 @@ public class AudioStreaming {
         print("Network Available")
 
         // Only respond if interrupted by network
+        // Only respond if interrupted by network
         guard currentInterruptionSource == .network else {
-            print("Ignoring network available - not interrupted by network (source=\(currentInterruptionSource))")
+            // CRITICAL FIX: If network comes back DURING a phone call, we must record that.
+            // Otherwise, when call ends, we'll think network is still down and wait forever.
+            if currentInterruptionSource == .phoneCall {
+                print("Network recovered during phone call")
+                networkLostDuringPhoneCall = false
+            } else {
+                print("Ignoring network available - not interrupted by network (source=\(currentInterruptionSource))")
+            }
             return
         }
 
@@ -479,8 +487,13 @@ public class AudioStreaming {
         case RTMPConnection.Code.connectFailed.rawValue, RTMPConnection.Code.connectClosed.rawValue:
             // Check for network error first
             let description = e.type.rawValue
-            if isNetworkRelatedError(description: description) {
-               print("RTSP failure appears network-related, triggering network interruption")
+            
+            // CRITICAL FIX: Only treat as "Network Lost" (passive wait) if the OS agrees network is down.
+            // If OS says network is UP (satisfied), this is likely a server/socket glitch.
+            // We should RETRY in that case, not give up and wait for a network event that won't come.
+            let isOsOffline = networkMonitor?.currentPath.status != .satisfied
+            if isNetworkRelatedError(description: description) && isOsOffline {
+               print("RTSP failure appears network-related AND OS says offline -> triggering network interruption")
                handleNetworkLost()
                return
             }
@@ -526,8 +539,12 @@ public class AudioStreaming {
         }
         
         let description = notification.name.rawValue
-        if isNetworkRelatedError(description: description) {
-           print("RTSP IO Error appears network-related, triggering network interruption")
+        let description = notification.name.rawValue
+        
+        // CRITICAL FIX: Only trigger Network Lost if OS confirms offline.
+        let isOsOffline = networkMonitor?.currentPath.status != .satisfied
+        if isNetworkRelatedError(description: description) && isOsOffline {
+           print("RTSP IO Error appears network-related AND OS says offline -> triggering network interruption")
            handleNetworkLost()
            return
         }
