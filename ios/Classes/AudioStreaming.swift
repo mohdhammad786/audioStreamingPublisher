@@ -595,12 +595,14 @@ public class AudioStreaming {
         networkMonitor = NWPathMonitor()
 
         networkMonitor?.pathUpdateHandler = { [weak self] path in
-            if path.status == .satisfied {
-                print("Network available")
-                self?.handleNetworkAvailable()
-            } else {
-                print("Network lost")
-                self?.handleNetworkLost()
+            DispatchQueue.main.async {
+                if path.status == .satisfied {
+                    print("Network available")
+                    self?.handleNetworkAvailable()
+                } else {
+                    print("Network lost")
+                    self?.handleNetworkLost()
+                }
             }
         }
 
