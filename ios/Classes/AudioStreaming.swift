@@ -24,7 +24,7 @@ public class AudioStreaming {
     private var savedUrl: String?
     private var savedName: String?
     private let phoneInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
-    private let networkInterruptionTimeout: TimeInterval = 25.0  // 25 seconds
+    private let networkInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
 
     // Interruption source tracking
     private enum InterruptionSource {
@@ -188,9 +188,9 @@ public class AudioStreaming {
             return
         }
 
-        // Only care if connected
-        guard rtmpConnection.connected else {
-            print("Not streaming, ignoring network loss")
+        // We care if we are connected OR if we are trying to reconnect (savedUrl exists)
+        guard rtmpConnection.connected || savedUrl != nil else {
+            print("Not streaming or reconnecting, ignoring network loss")
             return
         }
 
@@ -432,6 +432,14 @@ public class AudioStreaming {
             }
             break
         case RTMPConnection.Code.connectFailed.rawValue, RTMPConnection.Code.connectClosed.rawValue:
+            // Check for network error first
+            let description = e.type.rawValue
+            if isNetworkRelatedError(description: description) {
+               print("RTSP failure appears network-related, triggering network interruption")
+               handleNetworkLost()
+               return
+            }
+
             guard retries <= 3 else {
                 if SwiftFlutterAudioStreamingPlugin.eventSink != nil {
                     SwiftFlutterAudioStreamingPlugin.eventSink!(["event" : "error",
@@ -457,6 +465,14 @@ public class AudioStreaming {
         if #available(iOS 10.0, *) {
             os_log("%s", notification.name.rawValue)
         }
+        
+        let description = notification.name.rawValue
+        if isNetworkRelatedError(description: description) {
+           print("RTSP IO Error appears network-related, triggering network interruption")
+           handleNetworkLost()
+           return
+        }
+
         guard retries <= 3 else {
             if SwiftFlutterAudioStreamingPlugin.eventSink != nil {
                 SwiftFlutterAudioStreamingPlugin.eventSink!(["event" : "rtmp_stopped",
@@ -471,6 +487,17 @@ public class AudioStreaming {
             SwiftFlutterAudioStreamingPlugin.eventSink!(["event" : "rtmp_retry",
                    "errorDescription" : "rtmp disconnected"])
         }
+    }
+
+    private func isNetworkRelatedError(description: String) -> Bool {
+        let keywords = [
+            "network", "timeout", "unreachable", "connection refused",
+            "no route", "socket", "broken pipe", "failed to connect",
+            "host", "resolve", "dns", "ioexception",
+            "software", "abort", "connection reset"
+        ]
+        let lowerDesc = description.lowercased()
+        return keywords.contains { lowerDesc.contains($0) }
     }
     
     
@@ -514,6 +541,9 @@ public class AudioStreaming {
     public func stop() {
         stopNetworkMonitoring()
         currentInterruptionSource = .none
+        isInterrupted = false
+        savedUrl = nil
+        savedName = nil
         rtmpConnection.close()
         deactivateAudioSession()  // Mic indicator gone
     }
