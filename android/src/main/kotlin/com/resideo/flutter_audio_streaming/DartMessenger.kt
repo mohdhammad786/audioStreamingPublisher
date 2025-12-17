@@ -11,7 +11,8 @@ class DartMessenger(messenger: BinaryMessenger, id: String) {
 
     enum class EventType {
         ERROR, CAMERA_CLOSING, RTMP_STOPPED, RTMP_RETRY, ROTATION_UPDATE,
-        AUDIO_INTERRUPTED, AUDIO_RESUMED
+        AUDIO_INTERRUPTED, AUDIO_RESUMED,
+        NETWORK_INTERRUPTED, NETWORK_RESUMED
     }
 
     fun send(eventType: EventType, description: String?) {

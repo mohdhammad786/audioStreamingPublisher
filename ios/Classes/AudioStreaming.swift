@@ -7,6 +7,7 @@ import HaishinKit
 import os
 import ReplayKit
 import VideoToolbox
+import Network
 
 public class AudioStreaming {
     private var rtmpConnection = RTMPConnection()
@@ -22,7 +23,20 @@ public class AudioStreaming {
     private var isInterrupted: Bool = false
     private var savedUrl: String?
     private var savedName: String?
-    private let interruptionTimeout: TimeInterval = 30.0  // 30 seconds
+    private let phoneInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
+    private let networkInterruptionTimeout: TimeInterval = 25.0  // 25 seconds
+
+    // Interruption source tracking
+    private enum InterruptionSource {
+        case none
+        case phoneCall
+        case network
+    }
+    private var currentInterruptionSource: InterruptionSource = .none
+
+    // Network monitoring properties
+    private var networkMonitor: NWPathMonitor?
+    private var networkQueue: DispatchQueue?
 
     public func setEventSink(_ sink: @escaping FlutterEventSink) {
         self.eventSink = sink
@@ -107,7 +121,7 @@ public class AudioStreaming {
 
         switch type {
         case .began:
-            handleInterruptionBegan()
+            handlePhoneInterruptionBegan()
 
         case .ended:
             guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
@@ -117,7 +131,7 @@ public class AudioStreaming {
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
 
             if options.contains(.shouldResume) {
-                handleInterruptionEnded()
+                handlePhoneInterruptionEnded()
             } else {
                 print("Interruption ended but cannot auto-resume")
             }
@@ -127,14 +141,85 @@ public class AudioStreaming {
         }
     }
 
+    // Phone Call Interruption Handlers
+    private func handlePhoneInterruptionBegan() {
+        print("Phone Call Interruption Began")
+
+        // If already interrupted by network, switch to phone (phone takes precedence)
+        if isInterrupted && currentInterruptionSource == .network {
+            print("Switching from network to phone interruption (phone takes precedence)")
+            cancelInterruptionTimer()
+            currentInterruptionSource = .phoneCall
+            startInterruptionTimer()
+
+            // Notify Flutter of source change
+            DispatchQueue.main.async { [weak self] in
+                self?.eventSink?([
+                    "event": "audio_interrupted",
+                    "errorDescription": "Phone call started during network interruption"
+                ])
+            }
+            return
+        }
+
+        currentInterruptionSource = .phoneCall
+        handleInterruptionBegan()
+    }
+
+    private func handlePhoneInterruptionEnded() {
+        print("Phone Call Interruption Ended")
+
+        // Only respond if interrupted by phone
+        guard currentInterruptionSource == .phoneCall else {
+            print("Ignoring phone end - not interrupted by phone (source=\(currentInterruptionSource))")
+            return
+        }
+
+        handleInterruptionEnded()
+    }
+
+    // Network Interruption Handlers
+    private func handleNetworkLost() {
+        print("Network Lost Detected")
+
+        // Ignore if already interrupted by phone (phone takes precedence)
+        guard currentInterruptionSource != .phoneCall else {
+            print("Already interrupted by phone call, ignoring network loss")
+            return
+        }
+
+        // Only care if connected
+        guard rtmpConnection.connected else {
+            print("Not streaming, ignoring network loss")
+            return
+        }
+
+        currentInterruptionSource = .network
+        handleInterruptionBegan()
+    }
+
+    private func handleNetworkAvailable() {
+        print("Network Available")
+
+        // Only respond if interrupted by network
+        guard currentInterruptionSource == .network else {
+            print("Ignoring network available - not interrupted by network (source=\(currentInterruptionSource))")
+            return
+        }
+
+        handleInterruptionEnded()
+    }
+
+    // Common Interruption Handlers
     private func handleInterruptionBegan() {
+        print("Interruption Began (Source: \(currentInterruptionSource))")
+
         guard !isInterrupted else {
             print("Already handling interruption")
             return
         }
 
         isInterrupted = true
-        print("Gracefully disconnecting stream for interruption")
 
         // 1. Store current connection info for reconnection
         savedUrl = self.url
@@ -144,19 +229,29 @@ public class AudioStreaming {
         rtmpConnection.close()
         deactivateAudioSession()
 
-        // 3. Send AUDIO_INTERRUPTED event (NOT RTMP_STOPPED)
+        // 3. Send appropriate event
         DispatchQueue.main.async { [weak self] in
-            self?.eventSink?([
-                "event": "audio_interrupted",
-                "errorDescription": "Phone call detected - stream paused temporarily"
+            guard let self = self else { return }
+
+            let event = self.currentInterruptionSource == .phoneCall ?
+                "audio_interrupted" : "network_interrupted"
+            let message = self.currentInterruptionSource == .phoneCall ?
+                "Phone call detected - stream paused temporarily" :
+                "Network loss detected - stream paused temporarily"
+
+            self.eventSink?([
+                "event": event,
+                "errorDescription": message
             ])
         }
 
-        // 4. Start timeout timer (30 seconds)
+        // 4. Start timeout timer
         startInterruptionTimer()
     }
 
     private func handleInterruptionEnded() {
+        print("Interruption Ended (Source: \(currentInterruptionSource))")
+
         guard isInterrupted else {
             print("Not in interrupted state")
             return
@@ -165,7 +260,7 @@ public class AudioStreaming {
         // Cancel timeout timer
         cancelInterruptionTimer()
 
-        print("Interruption ended - attempting reconnection")
+        print("Attempting reconnection")
 
         // Attempt to reconnect
         reconnectStream()
@@ -174,15 +269,18 @@ public class AudioStreaming {
     private func startInterruptionTimer() {
         cancelInterruptionTimer()  // Cancel any existing timer
 
+        let timeout = currentInterruptionSource == .phoneCall ?
+            phoneInterruptionTimeout : networkInterruptionTimeout
+
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        timer.schedule(deadline: .now() + interruptionTimeout)
+        timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler { [weak self] in
             self?.handleInterruptionTimeout()
         }
         timer.resume()
 
         interruptionTimer = timer
-        print("Interruption timeout timer started (30 seconds)")
+        print("Interruption timeout timer started (\(timeout) seconds, source=\(currentInterruptionSource))")
     }
 
     private func cancelInterruptionTimer() {
@@ -280,6 +378,10 @@ public class AudioStreaming {
         self.url = bits.joined(separator: "/")
         rtmpStream.delegate = myDelegate
         self.retries = 0
+
+        // Start network monitoring
+        startNetworkMonitoring()
+
         // Run this on the ui thread.
         DispatchQueue.main.async {
             self.rtmpConnection.connect(self.url ?? "frog")
@@ -310,15 +412,20 @@ public class AudioStreaming {
 
             rtmpStream.publish(streamName)
 
-            // If this was a reconnection, send AUDIO_RESUMED event
+            // If this was a reconnection, send appropriate RESUMED event
             if savedUrl != nil {
                 print("Reconnection successful!")
+
+                let event = currentInterruptionSource == .phoneCall ?
+                    "audio_resumed" : "network_resumed"
+
                 savedUrl = nil
                 savedName = nil
+                currentInterruptionSource = .none
 
                 DispatchQueue.main.async { [weak self] in
                     self?.eventSink?([
-                        "event": "audio_resumed",
+                        "event": event,
                         "errorDescription": "Stream resumed after interruption"
                     ])
                 }
@@ -405,16 +512,45 @@ public class AudioStreaming {
     
     
     public func stop() {
+        stopNetworkMonitoring()
+        currentInterruptionSource = .none
         rtmpConnection.close()
         deactivateAudioSession()  // Mic indicator gone
     }
 
     public func dispose(){
         cancelInterruptionTimer()  // Cancel any pending timer
+        stopNetworkMonitoring()  // Stop network monitoring
         NotificationCenter.default.removeObserver(self)  // Remove interruption observer
         deactivateAudioSession()  // Final cleanup
         rtmpStream = nil
         rtmpConnection = RTMPConnection()
+    }
+
+    // MARK: - Network Monitoring
+    private func startNetworkMonitoring() {
+        networkQueue = DispatchQueue(label: "NetworkMonitor")
+        networkMonitor = NWPathMonitor()
+
+        networkMonitor?.pathUpdateHandler = { [weak self] path in
+            if path.status == .satisfied {
+                print("Network available")
+                self?.handleNetworkAvailable()
+            } else {
+                print("Network lost")
+                self?.handleNetworkLost()
+            }
+        }
+
+        networkMonitor?.start(queue: networkQueue!)
+        print("Network monitoring started")
+    }
+
+    private func stopNetworkMonitoring() {
+        networkMonitor?.cancel()
+        networkMonitor = nil
+        networkQueue = nil
+        print("Network monitoring stopped")
     }
 
     // MARK: - Private Helper
