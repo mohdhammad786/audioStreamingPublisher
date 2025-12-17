@@ -27,6 +27,7 @@ public class AudioStreaming {
 
     private let networkInterruptionTimeout: TimeInterval = 30.0  // 30 seconds
     private var isStreamingActive: Bool = false
+    private var isRetryingConnection: Bool = false  // Prevents overlapping retry chains
 
     // Interruption source tracking
     private enum InterruptionSource {
@@ -182,9 +183,20 @@ public class AudioStreaming {
         if networkLostDuringPhoneCall {
             print("Phone ended but network still down - switching to network interruption")
             networkLostDuringPhoneCall = false
+
+            // CRITICAL FIX: Verify network is ACTUALLY down right now
+            // It might have recovered during the call
+            let isCurrentlyOffline = networkMonitor?.currentPath.status != .satisfied
+            if !isCurrentlyOffline {
+                print("Actually, network is back up now - proceeding with reconnection")
+                handleInterruptionEnded()
+                return
+            }
+
+            // Network is still down, switch to network interruption
             currentInterruptionSource = .network
             startInterruptionTimer()  // Restart with network timeout (30s)
-            
+
             // Notify Flutter
             DispatchQueue.main.async { [weak self] in
                 self?.eventSink?([
@@ -378,8 +390,7 @@ public class AudioStreaming {
 
         // The rtmpStatusHandler will receive .connectSuccess and call publish()
         // We need to modify rtmpStatusHandler to handle reconnection
-
-        isInterrupted = false  // Reset flag
+        // NOTE: isInterrupted will be reset in rtmpStatusHandler AFTER connection succeeds
 
         print("Reconnection initiated")
     }
@@ -401,6 +412,24 @@ public class AudioStreaming {
 
 
     public func start(url: String, result: @escaping FlutterResult) {
+        // Guard against double-start or zombie restarts
+        if isStreamingActive {
+            print("Already streaming, ignoring start request")
+            result(nil)
+            return
+        }
+
+        // Guard against starting while in interrupted/reconnecting state
+        if isInterrupted || savedUrl != nil {
+            print("Cannot start - stream is in interrupted/reconnecting state")
+            result(FlutterError(
+                code: "INTERRUPTED_STATE",
+                message: "Cannot start new stream while previous stream is interrupted or reconnecting. Call stop() first.",
+                details: nil
+            ))
+            return
+        }
+
         // Check if there's an active phone call
         if isPhoneCallActive() {
             result(FlutterError(
@@ -422,12 +451,12 @@ public class AudioStreaming {
         rtmpStream.delegate = myDelegate
         self.retries = 0
 
-        // Start network monitoring
-        startNetworkMonitoring()
-
         // Run this on the ui thread.
         DispatchQueue.main.async {
+            // CRITICAL: Set isStreamingActive BEFORE starting network monitor
+            // to prevent race condition where network callbacks fire before flag is set
             self.isStreamingActive = true
+            self.startNetworkMonitoring()
             self.rtmpConnection.connect(self.url ?? "frog")
             result(nil)
         }
@@ -462,6 +491,13 @@ public class AudioStreaming {
             }
 
             retries = 0
+
+            // CRITICAL FIX: Reset isInterrupted ONLY after successful connection
+            // This prevents race conditions where network is lost during reconnection
+            if isInterrupted {
+                isInterrupted = false
+                print("Reconnection successful - resetting isInterrupted flag")
+            }
 
             // Determine stream name (use saved name if reconnecting)
             let streamName = savedName ?? name
@@ -513,29 +549,39 @@ public class AudioStreaming {
                 }
                 return
             }
+
+            // CRITICAL FIX: Prevent overlapping retry chains
+            guard !isRetryingConnection else {
+                print("Retry already in progress, skipping duplicate retry")
+                return
+            }
+
             retries += 1
-            
+            isRetryingConnection = true
+
             // Blocking sleep on Main Thread creates deadlocks! Use asyncAfter instead.
             let delay = pow(2.0, Double(retries))
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self = self else { return }
-                
+
+                self.isRetryingConnection = false
+
                 // CRITICAL FIX: race condition check
                 // Ensure we are still supposed to be streaming before retrying
                 guard self.isStreamingActive else {
                     print("Retry aborted - streaming is no longer active")
                     return
                 }
-                
+
                 // Don't retry if we've entered interruption mode (e.g. network lost during wait)
                 if self.isInterrupted {
                      print("Retry aborted - entered interrupted state")
                      return
                 }
-                
+
                 print("Retrying connection (attempt \(self.retries))...")
                 self.rtmpConnection.connect(self.url ?? "")
-                
+
                  if SwiftFlutterAudioStreamingPlugin.eventSink != nil {
                     SwiftFlutterAudioStreamingPlugin.eventSink!(["event" : "rtmp_retry",
                                "errorDescription" : "connection failed " + e.type.rawValue])
@@ -571,23 +617,33 @@ public class AudioStreaming {
             }
             return
         }
+
+        // CRITICAL FIX: Prevent overlapping retry chains
+        guard !isRetryingConnection else {
+            print("Retry already in progress, skipping duplicate retry")
+            return
+        }
+
         retries += 1
-        
+        isRetryingConnection = true
+
         let delay = pow(2.0, Double(retries))
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
              guard let self = self else { return }
-             
+
+             self.isRetryingConnection = false
+
              // CRITICAL FIX: race condition check
              guard self.isStreamingActive else {
                  print("Retry aborted - streaming is no longer active")
                  return
              }
-             
+
              if self.isInterrupted { return }
-             
+
              print("Retrying connection (attempt \(self.retries))...")
              self.rtmpConnection.connect(self.url ?? "")
-             
+
              if SwiftFlutterAudioStreamingPlugin.eventSink != nil {
                 SwiftFlutterAudioStreamingPlugin.eventSink!(["event" : "rtmp_retry",
                        "errorDescription" : "rtmp disconnected"])
@@ -645,7 +701,15 @@ public class AudioStreaming {
     
     
     public func stop() {
+        // Remove event listeners to prevent memory leaks
+        rtmpConnection.removeEventListener(.rtmpStatus, selector: #selector(rtmpStatusHandler), observer: self)
+        rtmpConnection.removeEventListener(.ioError, selector: #selector(rtmpErrorHandler), observer: self)
+
         stopNetworkMonitoring()
+
+        // Explicitly detach audio device to ensure microphone is released
+        rtmpStream?.attachAudio(nil)
+
         currentInterruptionSource = .none
         isInterrupted = false
         isStreamingActive = false
