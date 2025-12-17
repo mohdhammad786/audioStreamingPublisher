@@ -31,7 +31,7 @@ class NetworkMonitor(
 
     companion object {
         private const val TAG = "NetworkMonitor"
-        private const val DEBOUNCE_DELAY_MS = 500L
+        private const val DEBOUNCE_DELAY_MS = 300L  // Reduced from 500ms for faster response
     }
 
     fun startMonitoring() {
@@ -80,7 +80,7 @@ class NetworkMonitor(
 
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            // Removed NET_CAPABILITY_VALIDATED - too strict, prevents callbacks during transitions
             .build()
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -100,18 +100,18 @@ class NetworkMonitor(
 
                 Log.d(TAG, "Network capabilities changed - Internet: $hasInternet, Validated: $isValidated")
 
-                // Only consider network available if it has both internet and validated capabilities
-                handleNetworkChange(isAvailable = hasInternet && isValidated)
+                // Only check for internet capability, validation is optional
+                handleNetworkChange(isAvailable = hasInternet)
             }
         }
 
         try {
             connectivityManager?.registerNetworkCallback(networkRequest, networkCallback!!)
 
-            // Initial state check
+            // Don't set lastNetworkState on initialization - this allows first transition to be detected
+            // lastNetworkState remains null initially
             val initialState = isNetworkAvailable()
-            lastNetworkState = initialState
-            Log.i(TAG, "Initial network state: ${if (initialState) "Available" else "Unavailable"}")
+            Log.i(TAG, "Initial network state: ${if (initialState) "Available" else "Unavailable"} (not tracking yet)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register network callback: ${e.message}")
         }

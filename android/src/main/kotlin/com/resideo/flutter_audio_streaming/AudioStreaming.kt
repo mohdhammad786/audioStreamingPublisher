@@ -13,7 +13,7 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.IOException
 
 class AudioStreaming(
-    private var activity: Activity? = null,
+    context: Context,
     private var dartMessenger: DartMessenger? = null
 ) : ConnectCheckerRtsp, Application.ActivityLifecycleCallbacks {
 
@@ -23,8 +23,13 @@ class AudioStreaming(
         private const val NETWORK_INTERRUPTION_TIMEOUT_MS = 25000L // 25 seconds
     }
 
+    // Context and lifecycle management
+    private val applicationContext: Context = context.applicationContext
+    private var activity: Activity? = (context as? Activity)
+    private var isActivityValid: Boolean = true
+
     private val application: Application?
-        get() = activity?.application
+        get() = applicationContext as? Application
 
     // RTSP Client
     private val rtspAudio: RtspOnlyAudio = RtspOnlyAudio(this)
@@ -53,6 +58,7 @@ class AudioStreaming(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var interruptionRunnable: Runnable? = null
     private var currentInterruptionSource: InterruptionSource = InterruptionSource.NONE
+    private var networkLostDuringPhoneCall: Boolean = false  // Edge case: network lost while on call
 
     init {
         // Initialize managers if activity is available, or wait until startStreaming
@@ -80,6 +86,23 @@ class AudioStreaming(
                 onNetworkLost = { handleNetworkLost() },
                 onNetworkAvailable = { handleNetworkAvailable() }
             )
+        }
+    }
+
+    // Safe UI thread execution helper
+    private fun runOnMainThreadSafely(block: () -> Unit) {
+        if (!isActivityValid) {
+            Log.d(TAG, "Activity invalid, deferring UI operation")
+            return
+        }
+        mainHandler.post {
+            if (isActivityValid) {
+                try {
+                    block()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error executing on main thread: ${e.message}")
+                }
+            }
         }
     }
 
@@ -171,11 +194,19 @@ class AudioStreaming(
     }
 
     fun stopStreaming(result: MethodChannel.Result?) {
-        Log.d(TAG, "stopStreaming requested")
-        
+        Log.d(TAG, "stopStreaming requested - current state: $currentState")
+
+        // Guard against double-stop
+        if (currentState == StreamState.IDLE) {
+            Log.d(TAG, "Already stopped, ignoring")
+            result?.success(null)
+            return
+        }
+
         // Cancel any pending tasks
         cancelInterruptionTimeout()
         pendingReconnectOnResume = false
+        networkLostDuringPhoneCall = false  // Reset edge case flag
         
         // Clean up RTSP
         try {
@@ -235,7 +266,7 @@ class AudioStreaming(
             startInterruptionTimeout()
 
             // Notify Flutter of source change
-            activity?.runOnUiThread {
+            runOnMainThreadSafely {
                 dartMessenger?.send(DartMessenger.EventType.AUDIO_INTERRUPTED, "Phone call started during network interruption")
             }
             return
@@ -254,6 +285,15 @@ class AudioStreaming(
             return
         }
 
+        // Check if network was lost during phone call
+        if (networkLostDuringPhoneCall) {
+            Log.w(TAG, "Phone ended but network still down - switching to network interruption")
+            networkLostDuringPhoneCall = false
+            currentInterruptionSource = InterruptionSource.NETWORK
+            startInterruptionTimeout()  // Restart with network timeout
+            return
+        }
+
         handleInterruptionEnded()
     }
 
@@ -263,7 +303,8 @@ class AudioStreaming(
 
         // Ignore if already interrupted by phone (phone takes precedence)
         if (currentInterruptionSource == InterruptionSource.PHONE_CALL) {
-            Log.d(TAG, "Already interrupted by phone call, ignoring network loss")
+            Log.d(TAG, "Already interrupted by phone call, flagging network loss for later")
+            networkLostDuringPhoneCall = true
             return
         }
 
@@ -280,9 +321,15 @@ class AudioStreaming(
     private fun handleNetworkAvailable() {
         Log.i(TAG, "Network Available")
 
-        // Only respond if interrupted by network
+        // Only respond if we're actually interrupted
+        if (currentState != StreamState.INTERRUPTED) {
+            Log.d(TAG, "Ignoring network available - not interrupted (state=$currentState)")
+            return
+        }
+
+        // Only handle if interrupted by network specifically
         if (currentInterruptionSource != InterruptionSource.NETWORK) {
-            Log.d(TAG, "Ignoring network available - not interrupted by network (source=$currentInterruptionSource)")
+            Log.d(TAG, "Ignoring network available - interrupted by $currentInterruptionSource, not network")
             return
         }
 
@@ -318,11 +365,11 @@ class AudioStreaming(
         audioFocusManager?.abandonFocus()
 
         // 3. Notify Flutter with appropriate event
-        activity?.runOnUiThread {
+        runOnMainThreadSafely {
             val eventType = when(currentInterruptionSource) {
                 InterruptionSource.PHONE_CALL -> DartMessenger.EventType.AUDIO_INTERRUPTED
                 InterruptionSource.NETWORK -> DartMessenger.EventType.NETWORK_INTERRUPTED
-                else -> return@runOnUiThread
+                else -> return@runOnMainThreadSafely
             }
             val message = when(currentInterruptionSource) {
                 InterruptionSource.PHONE_CALL -> "Stream paused due to call"
@@ -397,58 +444,80 @@ class AudioStreaming(
         Thread {
             try {
                 Log.d(TAG, "Starting reconnection sequence...")
-                
+
+                // Check activity validity first
+                if (!isActivityValid) {
+                    Log.w(TAG, "Activity no longer valid - aborting reconnection")
+                    return@Thread
+                }
+
                 // 1. Ensure clean slate
                 if (rtspAudio.isStreaming) {
                     try { rtspAudio.stopStream() } catch (e: Exception) {}
                 }
-                
+
                 // 2. Force Audio Prepare (Re-initializes buffers/encoders)
-                // Note: prepareAudio handles being called multiple times usually, 
-                // but checking constraints is good.
                 val prepared = prepareInternal()
                 if (!prepared) {
                      Log.e(TAG, "Failed to re-prepare audio components")
-                     activity?.runOnUiThread { handleReconnectionFailure("Device prepare failed") }
+                     runOnMainThreadSafely { handleReconnectionFailure("Device prepare failed") }
                      return@Thread
                 }
-                
+
+                // Check validity after prepare
+                if (!isActivityValid) {
+                    Log.w(TAG, "Activity became invalid during prepare - aborting")
+                    return@Thread
+                }
+
                 // 3. Acquire Focus on Main Thread
                 var focusGranted = false
                 val latch = java.util.concurrent.CountDownLatch(1)
-                
-                activity?.runOnUiThread {
-                    focusGranted = audioFocusManager?.requestFocus() == true
+
+                runOnMainThreadSafely {
+                    if (isActivityValid) {
+                        focusGranted = audioFocusManager?.requestFocus() == true
+                    }
                     latch.countDown()
                 }
-                latch.await(2, java.util.concurrent.TimeUnit.SECONDS) // Safety wait
+
+                if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                    Log.e(TAG, "Timeout waiting for focus request")
+                    return@Thread
+                }
 
                 if (!focusGranted) {
-                    activity?.runOnUiThread { handleReconnectionFailure("Could not regain audio focus") }
+                    runOnMainThreadSafely { handleReconnectionFailure("Could not regain audio focus") }
+                    return@Thread
+                }
+
+                // Final validity check before starting stream
+                if (!isActivityValid) {
+                    Log.w(TAG, "Activity became invalid before starting stream")
                     return@Thread
                 }
 
                 // 4. Start RTSP Stream
                 Log.d(TAG, "Restarting RTSP stream to $url")
                 rtspAudio.startStream(url)
-                
+
                 // State update happens in onConnectionSuccessRtsp
-                
+
             } catch (e: Exception) {
                 Log.e(TAG, "Reconnection exception: ${e.message}")
-                activity?.runOnUiThread { handleReconnectionFailure(e.message ?: "Unknown error") }
+                runOnMainThreadSafely { handleReconnectionFailure(e.message ?: "Unknown error") }
             }
         }.start()
     }
 
     private fun handleReconnectionFailure(reason: String) {
         Log.e(TAG, "Reconnection failed: $reason")
-        
+
         // Clean up normally
         stopStreaming(null)
-        
+
         // Send STOPPED event so UI knows we are done
-        activity?.runOnUiThread {
+        runOnMainThreadSafely {
             dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, reason)
         }
     }
@@ -467,7 +536,7 @@ class AudioStreaming(
 
         if (currentState == StreamState.RECONNECTING || currentState == StreamState.INTERRUPTED) {
              Log.i(TAG, "Reconnection success - Sending RESUMED event")
-             activity?.runOnUiThread {
+             runOnMainThreadSafely {
                  val eventType = when(currentInterruptionSource) {
                      InterruptionSource.PHONE_CALL -> DartMessenger.EventType.AUDIO_RESUMED
                      InterruptionSource.NETWORK -> DartMessenger.EventType.NETWORK_RESUMED
@@ -498,7 +567,7 @@ class AudioStreaming(
         }
 
         // Non-network errors: use existing retry logic
-        activity?.runOnUiThread {
+        runOnMainThreadSafely {
              if (rtspAudio.reTry(5000, reason)) {
                  dartMessenger?.send(DartMessenger.EventType.RTMP_RETRY, reason)
              } else {
@@ -526,14 +595,14 @@ class AudioStreaming(
         }
         
         // Normal disconnect
-        activity?.runOnUiThread {
+        runOnMainThreadSafely {
             dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Disconnected")
         }
     }
 
     override fun onAuthErrorRtsp() {
         Log.e(TAG, "Auth Error")
-        activity?.runOnUiThread {
+        runOnMainThreadSafely {
             dartMessenger?.send(DartMessenger.EventType.ERROR, "Auth error")
         }
     }
@@ -551,7 +620,8 @@ class AudioStreaming(
     override fun onActivityResumed(activity: Activity) {
         if (activity === this.activity) {
             isInForeground = true
-            
+            isActivityValid = true  // Activity is valid again
+
             if (pendingReconnectOnResume) {
                 Log.d(TAG, "Resumed with pending reconnect")
                 pendingReconnectOnResume = false
@@ -576,7 +646,23 @@ class AudioStreaming(
 
     override fun onActivityDestroyed(activity: Activity) {
         if (activity === this.activity) {
-            stopStreaming(null)
+            Log.d(TAG, "Activity destroyed - state: $currentState, source: $currentInterruptionSource")
+
+            when (currentState) {
+                StreamState.INTERRUPTED, StreamState.RECONNECTING -> {
+                    Log.i(TAG, "Activity destroyed during interruption - deferring cleanup")
+                    isActivityValid = false
+                    // Don't call stopStreaming() - let interruption timer handle it
+                }
+                StreamState.STREAMING, StreamState.PREPARING -> {
+                    Log.i(TAG, "Activity destroyed while active - stopping cleanly")
+                    isActivityValid = false
+                    stopStreaming(null)
+                }
+                else -> {
+                    isActivityValid = false
+                }
+            }
         }
     }
     
