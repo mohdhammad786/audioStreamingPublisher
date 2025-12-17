@@ -106,7 +106,7 @@ class NetworkMonitor(
         }
 
         try {
-            connectivityManager.registerNetworkCallback(networkRequest, networkCallback!!)
+            connectivityManager?.registerNetworkCallback(networkRequest, networkCallback!!)
 
             // Initial state check
             val initialState = isNetworkAvailable()
