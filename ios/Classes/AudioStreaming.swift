@@ -453,6 +453,14 @@ public class AudioStreaming {
                 return
             }
 
+            // CRITICAL FIX: race condition check
+            // If stop() was called while we were connecting, we must abort immediately.
+            guard isStreamingActive else {
+                print("Connection success arrived but streaming is no longer active - closing")
+                rtmpConnection.close()
+                return
+            }
+
             retries = 0
 
             // Determine stream name (use saved name if reconnecting)
@@ -512,6 +520,13 @@ public class AudioStreaming {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self = self else { return }
                 
+                // CRITICAL FIX: race condition check
+                // Ensure we are still supposed to be streaming before retrying
+                guard self.isStreamingActive else {
+                    print("Retry aborted - streaming is no longer active")
+                    return
+                }
+                
                 // Don't retry if we've entered interruption mode (e.g. network lost during wait)
                 if self.isInterrupted {
                      print("Retry aborted - entered interrupted state")
@@ -561,6 +576,13 @@ public class AudioStreaming {
         let delay = pow(2.0, Double(retries))
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
              guard let self = self else { return }
+             
+             // CRITICAL FIX: race condition check
+             guard self.isStreamingActive else {
+                 print("Retry aborted - streaming is no longer active")
+                 return
+             }
+             
              if self.isInterrupted { return }
              
              print("Retrying connection (attempt \(self.retries))...")
