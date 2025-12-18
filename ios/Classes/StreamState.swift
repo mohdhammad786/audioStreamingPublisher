@@ -37,6 +37,8 @@ public class StreamStateMachineImpl: StreamStateMachine {
     private var _previousState: StreamState = .idle
     private var observers: [WeakObserverWrapper] = []
 
+    public init() {}
+
     public var currentState: StreamState {
         lock.lock()
         defer { lock.unlock() }

@@ -24,6 +24,8 @@ public class PhoneCallMonitorImpl: NSObject, PhoneCallMonitor {
     private weak var delegate: PhoneCallMonitorDelegate?
     private let queue = DispatchQueue.main
 
+    public override init() {}
+
     public var isPhoneCallActive: Bool {
         // Primary method: Use CallKit observer state
         if _hasActiveCall {

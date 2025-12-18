@@ -676,11 +676,28 @@ class AudioStreamingQoSDelegate: RTMPStreamDelegate {
         return 32 * 1000
     }
 
-    func didPublishInsufficientBW(_ stream: RTMPStream, withConnection: RTMPConnection) {
+    // MARK: - RTMPStreamDelegate Required Methods
+    func rtmpStream(_ stream: RTMPStream, didPublishInsufficientBW connection: RTMPConnection) {
         // No video streaming, audio bitrate is fixed
     }
 
-    func didPublishSufficientBW(_ stream: RTMPStream, withConnection: RTMPConnection) {
+    func rtmpStream(_ stream: RTMPStream, didPublishSufficientBW connection: RTMPConnection) {
         // No video streaming, audio bitrate is fixed
+    }
+
+    func rtmpStream(_ stream: RTMPStream, didStatics connection: RTMPConnection) {
+        // Statistics monitoring - not needed for audio-only streaming
+    }
+
+    func rtmpStreamDidClear(_ stream: RTMPStream) {
+        // Stream cleared - not needed for audio-only streaming
+    }
+
+    func rtmpStream(_ stream: RTMPStream, didOutput audio: AVAudioBuffer, presentationTimeStamp: CMTime) {
+        // Audio output monitoring - not needed
+    }
+
+    func rtmpStream(_ stream: RTMPStream, didOutput video: CMSampleBuffer) {
+        // No video streaming
     }
 }

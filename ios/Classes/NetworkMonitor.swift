@@ -22,6 +22,8 @@ public class NetworkMonitorImpl: NSObject, NetworkMonitor {
     private var monitorQueue: DispatchQueue?
     private weak var delegate: NetworkMonitorDelegate?
 
+    public override init() {}
+
     public var isNetworkAvailable: Bool {
         return pathMonitor?.currentPath.status == .satisfied
     }
