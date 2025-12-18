@@ -386,27 +386,62 @@ public class AudioStreaming {
         rtmpStream.attachAudio(nil)
         rtmpConnection.close()
 
-        // Re-setup audio session
+        // Re-setup audio session with retry logic
+        // iOS may not immediately release audio session after phone call ends
+        activateAudioSessionWithRetry { [weak self] success in
+            guard let self = self else { return }
+
+            // Verify we're still in reconnecting state (not cancelled)
+            guard self.stateMachine.currentState == .reconnecting else {
+                print("⚠️ Reconnection cancelled - state changed to \(self.stateMachine.currentState.description)")
+                return
+            }
+
+            guard success else {
+                print("❌ Failed to activate audio session after retries")
+                _ = self.stateMachine.transitionTo(.failed)
+                self.sendEvent(event: "error", message: "Audio session activation failed after phone call")
+                return
+            }
+
+            // Re-attach audio
+            self.rtmpStream.attachAudio(AVCaptureDevice.default(for: AVMediaType.audio)) { [weak self] error in
+                print("❌ Failed to reattach audio: \(error)")
+                _ = self?.stateMachine.transitionTo(.failed)
+                self?.sendEvent(event: "error", message: "Failed to attach audio device")
+                return
+            }
+
+            // Reconnect
+            print("🔄 Connecting to RTMP server...")
+            self.rtmpConnection.connect(savedUrl)
+            print("Reconnection initiated")
+        }
+    }
+
+    /// Activates audio session with retry logic to handle iOS timing issues
+    /// iOS may not immediately release the audio session after a phone call ends
+    private func activateAudioSessionWithRetry(attempt: Int = 0, maxAttempts: Int = 5, completion: @escaping (Bool) -> Void) {
         let session = AVAudioSession.sharedInstance()
+
         do {
             try session.setActive(true)
+            print("✅ Audio session activated successfully (attempt \(attempt + 1))")
+            completion(true)
         } catch {
-            print("Failed to reactivate audio session: \(error)")
-            _ = stateMachine.transitionTo(.failed)
-            sendEvent(event: "error", message: "Audio session activation failed")
-            return
-        }
+            if attempt < maxAttempts {
+                let delay = pow(2.0, Double(attempt)) * 0.05 // 50ms, 100ms, 200ms, 400ms, 800ms
+                print("⚠️ Audio session activation failed (attempt \(attempt + 1)/\(maxAttempts)): \(error)")
+                print("🔄 Retrying in \(Int(delay * 1000))ms...")
 
-        // Re-attach audio
-        rtmpStream.attachAudio(AVCaptureDevice.default(for: AVMediaType.audio)) { [weak self] error in
-            print("Failed to reattach audio: \(error)")
-            _ = self?.stateMachine.transitionTo(.failed)
-            self?.sendEvent(event: "error", message: "Failed to attach audio device")
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.activateAudioSessionWithRetry(attempt: attempt + 1, maxAttempts: maxAttempts, completion: completion)
+                }
+            } else {
+                print("❌ Audio session activation failed after \(maxAttempts) attempts: \(error)")
+                completion(false)
+            }
         }
-
-        // Reconnect
-        rtmpConnection.connect(savedUrl)
-        print("Reconnection initiated")
     }
 
     // MARK: - Helper Methods
