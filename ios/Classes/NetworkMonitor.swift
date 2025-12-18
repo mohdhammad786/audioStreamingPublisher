@@ -21,6 +21,7 @@ public class NetworkMonitorImpl: NSObject, NetworkMonitor {
     private var pathMonitor: NWPathMonitor?
     private var monitorQueue: DispatchQueue?
     private weak var delegate: NetworkMonitorDelegate?
+    private var wasAvailable: Bool? = nil  // Track previous state to avoid redundant callbacks
 
     public override init() {}
 
@@ -32,14 +33,35 @@ public class NetworkMonitorImpl: NSObject, NetworkMonitor {
     public func startMonitoring() {
         monitorQueue = DispatchQueue(label: "NetworkMonitor.\(UUID().uuidString)")
         pathMonitor = NWPathMonitor()
+        wasAvailable = nil  // Reset on start
 
         pathMonitor?.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
                 guard let self = self else { return }
 
-                if path.status == .satisfied {
-                    print("🌐 NetworkMonitor: Network AVAILABLE")
-                    self.delegate?.networkBecameAvailable()
+                let isAvailable = path.status == .satisfied
+
+                // Only fire callback if state ACTUALLY changed (avoid redundant callbacks)
+                guard self.wasAvailable != isAvailable else {
+                    print("🌐 NetworkMonitor: Status unchanged (\(isAvailable ? "available" : "unavailable")) - skipping")
+                    return
+                }
+
+                self.wasAvailable = isAvailable
+
+                if isAvailable {
+                    // Small delay to let WiFi fully connect (iOS timing bug workaround)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        guard let self = self else { return }
+                        // Verify still available after delay
+                        if self.pathMonitor?.currentPath.status == .satisfied {
+                            print("🌐 NetworkMonitor: Network AVAILABLE (verified after 500ms)")
+                            self.delegate?.networkBecameAvailable()
+                        } else {
+                            print("🌐 NetworkMonitor: Network became unavailable during verification")
+                            self.wasAvailable = false
+                        }
+                    }
                 } else {
                     print("🌐 NetworkMonitor: Network UNAVAILABLE")
                     self.delegate?.networkBecameUnavailable()
@@ -55,6 +77,7 @@ public class NetworkMonitorImpl: NSObject, NetworkMonitor {
         pathMonitor?.cancel()
         pathMonitor = nil
         monitorQueue = nil
+        wasAvailable = nil  // Reset
         print("🌐 NetworkMonitor: Stopped monitoring")
     }
 

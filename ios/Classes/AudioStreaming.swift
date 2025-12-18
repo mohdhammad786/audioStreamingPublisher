@@ -618,18 +618,29 @@ extension AudioStreaming: NetworkMonitorDelegate {
     private func handleNetworkAvailable() {
         print("🌐 Network Available")
 
-        stateLock.lock()
-        defer { stateLock.unlock() }
-
-        guard interruptionManager.currentSource == .network else {
-            print("⚠️ Network available but current source is \(interruptionManager.currentSource)")
+        // Must be in interrupted state to reconnect
+        guard stateMachine.currentState == .interrupted else {
+            print("🌐 Network available but not in interrupted state (current: \(stateMachine.currentState.description))")
             return
         }
 
-        // Clear flag if network comes back during phone call
-        if interruptionManager.hasNetworkLossDuringPhoneCall {
-            print("📞 Network came back during phone call - clearing flag")
-            interruptionManager.setNetworkLostDuringPhoneCall(false)
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        let currentSource = interruptionManager.currentSource
+
+        // Handle network recovery during phone call (phone call takes priority)
+        if currentSource == .phoneCall {
+            if interruptionManager.hasNetworkLossDuringPhoneCall {
+                print("📞 Network came back during phone call - clearing flag, will reconnect after call")
+                interruptionManager.setNetworkLostDuringPhoneCall(false)
+            }
+            return
+        }
+
+        // Must be network interruption to proceed
+        guard currentSource == .network else {
+            print("⚠️ Network available but current source is \(currentSource) - cannot reconnect")
             return
         }
 
