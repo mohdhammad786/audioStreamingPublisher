@@ -205,7 +205,7 @@ public class AudioStreaming {
         var bits = url.components(separatedBy: "/")
         bits.removeLast()
         self.url = bits.joined(separator: "/")
-        rtmpStream.delegate = myDelegate
+        rtmpStream?.delegate = myDelegate
         reconnectionManager.resetRetryCount()
         interruptionManager.clearAllInterruptions()
 
@@ -590,11 +590,7 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
         }
 
         // Check if network was lost during phone call (Scenario 3)
-        if interruptionManager.handleInterruptionEnded(source: .phoneCall) {
-            // Note: return true from manager extension if it switched to network
-            // Wait, I didn't change the manager interface, just the internal logic.
-            // I should check manager.currentSource instead.
-        }
+        interruptionManager.handleInterruptionEnded(source: .phoneCall)
         
         if interruptionManager.currentSource == .network {
             print("🌐 Phone ended but network lost - switching to network interruption (Scenario 3)")
