@@ -16,13 +16,27 @@ import android.util.Log
  */
 class NetworkMonitor(
     private val context: Context,
-    private val onNetworkLost: () -> Unit,
-    private val onNetworkAvailable: () -> Unit
-) {
+    private val mediator: StreamingMediator
+) : NetworkMonitorInterface {
 
     private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var isMonitoring = false
+
+    override val isNetworkAvailable: Boolean
+        get() {
+            if (connectivityManager == null) return false
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val network = connectivityManager.activeNetwork ?: return false
+                val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            } else {
+                @Suppress("DEPRECATION")
+                val networkInfo = connectivityManager.activeNetworkInfo
+                @Suppress("DEPRECATION")
+                networkInfo?.isConnected == true
+            }
+        }
 
     // Debouncing: Track last event time to avoid spurious rapid changes
     private val debounceHandler = Handler(Looper.getMainLooper())
@@ -31,10 +45,10 @@ class NetworkMonitor(
 
     companion object {
         private const val TAG = "NetworkMonitor"
-        private const val DEBOUNCE_DELAY_MS = 300L  // Reduced from 500ms for faster response
+        private const val DEBOUNCE_DELAY_MS = 100L  // Extremely fast response for Uncle Bob style logic
     }
 
-    fun startMonitoring() {
+    override fun startMonitoring() {
         if (isMonitoring || connectivityManager == null) {
             if (connectivityManager == null) {
                 Log.e(TAG, "ConnectivityManager not available")
@@ -54,7 +68,7 @@ class NetworkMonitor(
         Log.d(TAG, "Network monitoring started")
     }
 
-    fun stopMonitoring() {
+    override fun stopMonitoring() {
         if (!isMonitoring || connectivityManager == null) return
 
         try {
@@ -80,38 +94,30 @@ class NetworkMonitor(
 
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            // Removed NET_CAPABILITY_VALIDATED - too strict, prevents callbacks during transitions
             .build()
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.d(TAG, "Network available: $network")
+                Log.d(TAG, "Network available callback: $network")
                 handleNetworkChange(isAvailable = true)
             }
 
             override fun onLost(network: Network) {
-                Log.d(TAG, "Network lost: $network")
+                Log.d(TAG, "Network lost callback: $network")
                 handleNetworkChange(isAvailable = false)
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
                 val hasInternet = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                val isValidated = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-
-                Log.d(TAG, "Network capabilities changed - Internet: $hasInternet, Validated: $isValidated")
-
-                // Only check for internet capability, validation is optional
+                // We don't wait for VALIDATED capability here to ensure "immediate" events as requested
+                Log.d(TAG, "Network capabilities changed - Internet: $hasInternet")
                 handleNetworkChange(isAvailable = hasInternet)
             }
         }
 
         try {
             connectivityManager?.registerNetworkCallback(networkRequest, networkCallback!!)
-
-            // Don't set lastNetworkState on initialization - this allows first transition to be detected
-            // lastNetworkState remains null initially
-            val initialState = isNetworkAvailable()
-            Log.i(TAG, "Initial network state: ${if (initialState) "Available" else "Unavailable"} (not tracking yet)")
+            Log.i(TAG, "ConnectivityManager callback registered")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register network callback: ${e.message}")
         }
@@ -123,20 +129,21 @@ class NetworkMonitor(
 
         // Check if state actually changed
         if (lastNetworkState == isAvailable) {
-            Log.d(TAG, "Network state unchanged ($isAvailable), ignoring")
             return
         }
 
-        // Debounce the event to avoid rapid fire changes
+        // Debounce slightly to avoid rapid fire, but keep it very short (100ms)
         val event = Runnable {
+            if (lastNetworkState == isAvailable) return@Runnable
+            
             lastNetworkState = isAvailable
 
             if (isAvailable) {
-                Log.i(TAG, "Network became available (debounced)")
-                onNetworkAvailable()
+                Log.i(TAG, "🌐 Network Available")
+                mediator.onNetworkAvailable()
             } else {
-                Log.i(TAG, "Network became unavailable (debounced)")
-                onNetworkLost()
+                Log.i(TAG, "❌ Network Lost")
+                mediator.onNetworkLost()
             }
 
             pendingNetworkEvent = null
@@ -146,19 +153,5 @@ class NetworkMonitor(
         debounceHandler.postDelayed(event, DEBOUNCE_DELAY_MS)
     }
 
-    fun isNetworkAvailable(): Boolean {
-        if (connectivityManager == null) return false
-
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val network = connectivityManager.activeNetwork ?: return false
-            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } else {
-            @Suppress("DEPRECATION")
-            val networkInfo = connectivityManager.activeNetworkInfo
-            @Suppress("DEPRECATION")
-            networkInfo?.isConnected == true
-        }
-    }
+    // Unified isNetworkAvailable is now a property at the top
 }

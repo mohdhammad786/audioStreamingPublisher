@@ -30,7 +30,7 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  flutter_audio_streaming: 038a2a75f6c8cd18fbfa62465d9de6ca537afd27
+  flutter_audio_streaming: 9ba9c6fcfae064cbbb6d87e13d6dcf4891a273fa
   HaishinKit: 5cf385a823dee6b299404877edf418974422bf9f
   Logboard: 0ab6bbd984ed032b3f0b615cef06779a73445c80
   path_provider_foundation: 2a68637f8a62df7f6e790a428d1bdf72cb4e2d59

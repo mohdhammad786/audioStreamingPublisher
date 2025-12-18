@@ -15,18 +15,21 @@ public protocol PhoneCallMonitorDelegate: AnyObject {
     func phoneCallDidBegin()
     func phoneCallDidEnd()
 }
-
 /// Implementation of phone call monitoring using CallKit
 public class PhoneCallMonitorImpl: NSObject, PhoneCallMonitor {
     // MARK: - Properties
     private var callObserver: CXCallObserver?
     private var _hasActiveCall: Bool = false
     private weak var delegate: PhoneCallMonitorDelegate?
-    private let queue = DispatchQueue.main
+    private let queue = DispatchQueue(label: "com.resideo.phonecallmonitor.queue")
+    private let lock = NSLock()
 
     public override init() {}
 
     public var isPhoneCallActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        
         // Primary method: Use CallKit observer state
         if _hasActiveCall {
             return true
@@ -85,19 +88,26 @@ public class PhoneCallMonitorImpl: NSObject, PhoneCallMonitor {
 // MARK: - CXCallObserverDelegate
 extension PhoneCallMonitorImpl: CXCallObserverDelegate {
     public func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
-        print("📞 CallKit: Call state changed - hasEnded:\(call.hasEnded) hasConnected:\(call.hasConnected) [SECONDARY VERIFICATION]")
+        lock.lock()
+        // Improved logic: Count active calls correctly
+        let activeCalls = callObserver.calls.filter { !$0.hasEnded }
+        let wasActive = _hasActiveCall
+        _hasActiveCall = !activeCalls.isEmpty
+        lock.unlock()
 
-        if call.hasEnded {
-            _hasActiveCall = false
-            print("📞 CallKit: Call ended [SECONDARY]")
-            delegate?.phoneCallDidEnd()
-        } else if !call.hasEnded && !call.hasConnected {
-            print("📞 CallKit: Phone RINGING detected [SECONDARY - AVAudioSession should have fired first]")
-            _hasActiveCall = true
+        print("📞 CallKit: Call state changed - activeCount: \(activeCalls.count)")
+
+        if wasActive && !activeCalls.isEmpty {
+             // Still active - no change
+             return
+        }
+
+        if !wasActive && !activeCalls.isEmpty {
+            print("📞 CallKit: Phone interruption detected")
             delegate?.phoneCallDidBegin()
-        } else if call.hasConnected {
-            print("📞 CallKit: Call connected [SECONDARY]")
-            _hasActiveCall = true
+        } else if wasActive && activeCalls.isEmpty {
+            print("📞 CallKit: Phone interruption ended")
+            delegate?.phoneCallDidEnd()
         }
     }
 }

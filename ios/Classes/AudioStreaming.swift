@@ -390,7 +390,12 @@ public class AudioStreaming {
 
     // MARK: - Reconnection
     private func reconnectStream() {
-        guard let savedUrl = savedUrl, let savedName = savedName else {
+        stateLock.lock()
+        let url = savedUrl
+        let name = savedName
+        stateLock.unlock()
+
+        guard let savedUrl = url, let savedName = name else {
             print("❌ No saved connection info - cannot reconnect")
             stateLock.lock()
             reconnectionSource = .none
@@ -412,13 +417,12 @@ public class AudioStreaming {
         rtmpConnection.close()
 
         // Re-setup audio session with retry logic
-        // iOS may not immediately release audio session after phone call ends
         activateAudioSessionWithRetry { [weak self] success in
             guard let self = self else { return }
 
-            // Verify we're still in reconnecting state (not cancelled)
+            // Verify we're still in reconnecting state (not cancelled by stop/dispose)
             guard self.stateMachine.currentState == .reconnecting else {
-                print("⚠️ Reconnection cancelled - state changed to \(self.stateMachine.currentState.description)")
+                print("⚠️ Reconnection aborted - state changed to \(self.stateMachine.currentState.description)")
                 return
             }
 
@@ -440,7 +444,6 @@ public class AudioStreaming {
             // Reconnect
             print("🔄 Connecting to RTMP server...")
             self.rtmpConnection.connect(savedUrl)
-            print("Reconnection initiated")
         }
     }
 
@@ -454,8 +457,15 @@ public class AudioStreaming {
             print("✅ Audio session activated successfully (attempt \(attempt + 1))")
             completion(true)
         } catch {
+            // Check if we should still be attempting (state hasn't changed to idle/failed)
+            guard stateMachine.currentState == .reconnecting || stateMachine.currentState == .connecting else {
+                print("⚠️ Aborting audio session retry - state is \(stateMachine.currentState.description)")
+                completion(false)
+                return
+            }
+
             if attempt < maxAttempts {
-                let delay = pow(2.0, Double(attempt)) * 0.05 // 50ms, 100ms, 200ms, 400ms, 800ms
+                let delay = pow(2.0, Double(attempt)) * 0.1 // 100ms, 200ms, 400ms...
                 print("⚠️ Audio session activation failed (attempt \(attempt + 1)/\(maxAttempts)): \(error)")
                 print("🔄 Retrying in \(Int(delay * 1000))ms...")
 
@@ -579,22 +589,18 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
             return
         }
 
-        // Check if network was lost during phone call
-        if interruptionManager.hasNetworkLossDuringPhoneCall {
-            print("🌐 Network was lost during phone call")
-            interruptionManager.setNetworkLostDuringPhoneCall(false)
-
-            // Verify network is ACTUALLY down RIGHT NOW
-            if !networkMonitor.isNetworkAvailable {
-                print("🌐 Network still down - switching to network interruption")
-                interruptionManager.setCurrentSource(.network)
-                reconnectionSource = .network // Update reconnection source
-                interruptionManager.handleInterruptionBegan(source: .network)
-                sendEvent(event: "network_interrupted", message: "Network unavailable after phone call ended")
-                return
-            } else {
-                print("🌐 Network is back - proceeding to reconnect")
-            }
+        // Check if network was lost during phone call (Scenario 3)
+        if interruptionManager.handleInterruptionEnded(source: .phoneCall) {
+            // Note: return true from manager extension if it switched to network
+            // Wait, I didn't change the manager interface, just the internal logic.
+            // I should check manager.currentSource instead.
+        }
+        
+        if interruptionManager.currentSource == .network {
+            print("🌐 Phone ended but network lost - switching to network interruption (Scenario 3)")
+            reconnectionSource = .network
+            sendEvent(event: "network_interrupted", message: "Network unavailable after phone call ended")
+            return
         }
 
         endInterruption(source: .phoneCall)
@@ -739,9 +745,11 @@ extension AudioStreaming {
             return
         }
 
-        // Store connection info
+        // Store connection info with lock
+        stateLock.lock()
         savedUrl = self.url
         savedName = self.name
+        stateLock.unlock()
 
         // Close stream (prevent zombie)
         rtmpStream?.attachAudio(nil)

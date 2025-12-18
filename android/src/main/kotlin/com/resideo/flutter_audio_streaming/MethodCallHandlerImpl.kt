@@ -55,6 +55,7 @@ class MethodCallHandlerImpl(
                         override fun onResult(errorCode: String?, errorDescription: String?) {
                             if (errorCode == null) {
                                 streamingMessenger = DartMessenger(messenger, "streaming_event")
+                                // Using DIP: AudioStreaming will use default implementations of managers
                                 audioStreaming = AudioStreaming(activity, streamingMessenger)
                                 result.success(null)
 

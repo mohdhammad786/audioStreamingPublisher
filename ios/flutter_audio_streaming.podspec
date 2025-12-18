@@ -14,6 +14,12 @@ A Flutter plugin for record or streaming audio by RTMP
   s.author           = { 'Your Company' => 'email@example.com' }
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*'
+  s.exclude_files = 'Classes/Tests/**/*'
+  
+  s.test_spec 'Tests' do |test_spec|
+    test_spec.source_files = 'Classes/Tests/**/*'
+  end
+
   s.dependency 'Flutter'
   s.dependency 'HaishinKit', '~> 1.1.5'
   s.platform = :ios, '11.0'

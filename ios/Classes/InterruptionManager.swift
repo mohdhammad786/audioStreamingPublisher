@@ -64,55 +64,65 @@ public class InterruptionManagerImpl: InterruptionManager {
     // MARK: - InterruptionManager Implementation
     public func handleInterruptionBegan(source: InterruptionSource) {
         lock.lock()
+        defer { lock.unlock() }
+        
         let previousSource = _currentSource
         _currentSource = source
 
         // Handle network loss during phone call
         if source == .network && previousSource == .phoneCall {
             _networkLostDuringPhoneCall = true
-            lock.unlock()
             print("⏸️ InterruptionManager: Network lost during phone call - flagged")
             return
         }
 
-        lock.unlock()
-
-        cancelTimer()
+        // Atomic timer reset
+        internalCancelTimer()
         startTimer(for: source)
         print("⏸️ InterruptionManager: Interruption began - source: \(source)")
     }
 
     public func handleInterruptionEnded(source: InterruptionSource) {
         lock.lock()
+        defer { lock.unlock() }
+
         guard _currentSource == source else {
-            lock.unlock()
             print("⏸️ InterruptionManager: Ignoring end for \(source) - current source is \(_currentSource)")
             return
         }
 
-        // Check if network was lost during phone call
+        // Check if network was lost during phone call (Scenario 3)
         if source == .phoneCall && _networkLostDuringPhoneCall {
             _networkLostDuringPhoneCall = false
-            // Keep timer running but switch source - will be handled by caller
-            lock.unlock()
-            print("⏸️ InterruptionManager: Phone ended but network lost - keeping interruption active")
+            _currentSource = .network // Explicitly switch to network source
+            
+            // Restart timer for the new source
+            internalCancelTimer()
+            startTimer(for: .network)
+            print("⏸️ InterruptionManager: Phone ended but network lost - switching to network interruption")
             return
         }
 
         _currentSource = .none
-        lock.unlock()
-
-        cancelTimer()
+        internalCancelTimer()
         print("⏸️ InterruptionManager: Interruption ended - source: \(source)")
     }
 
     public func cancelTimer() {
+        lock.lock()
+        defer { lock.unlock() }
+        internalCancelTimer()
+    }
+
+    private func internalCancelTimer() {
         interruptionTimer?.cancel()
         interruptionTimer = nil
     }
 
     public func setDelegate(_ delegate: InterruptionManagerDelegate?) {
+        lock.lock()
         self.delegate = delegate
+        lock.unlock()
     }
 
     // MARK: - Internal Methods
@@ -130,15 +140,16 @@ public class InterruptionManagerImpl: InterruptionManager {
 
     public func clearAllInterruptions() {
         lock.lock()
+        defer { lock.unlock() }
         _currentSource = .none
         _networkLostDuringPhoneCall = false
-        lock.unlock()
-        cancelTimer()
+        internalCancelTimer()
         print("⏸️ InterruptionManager: Cleared all interruptions and timers")
     }
 
     // MARK: - Private Methods
     private func startTimer(for source: InterruptionSource) {
+        // Assume lock is already held by caller (handleInterruptionBegan or handleInterruptionEnded)
         let timeout = source == .phoneCall ? config.phoneCallTimeout : config.networkTimeout
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
@@ -146,9 +157,13 @@ public class InterruptionManagerImpl: InterruptionManager {
 
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
-            self.cancelTimer()
-            print("⏸️ InterruptionManager: Timeout expired for \(source)")
-            self.delegate?.interruptionTimedOut(source: source)
+            self.lock.lock()
+            let sourceToNotify = self._currentSource
+            self.internalCancelTimer()
+            self.lock.unlock()
+            
+            print("⏸️ InterruptionManager: Timeout expired for \(sourceToNotify)")
+            self.delegate?.interruptionTimedOut(source: sourceToNotify)
         }
 
         interruptionTimer = timer

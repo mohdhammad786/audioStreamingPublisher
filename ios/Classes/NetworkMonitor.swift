@@ -21,17 +21,20 @@ public class NetworkMonitorImpl: NSObject, NetworkMonitor {
     private var pathMonitor: NWPathMonitor?
     private var monitorQueue: DispatchQueue?
     private weak var delegate: NetworkMonitorDelegate?
-    private var wasAvailable: Bool? = nil  // Track previous state to avoid redundant callbacks
+    private var wasAvailable: Bool? = nil 
+    private let lock = NSLock()
 
     public override init() {}
 
     public var isNetworkAvailable: Bool {
+        lock.lock()
+        defer { lock.unlock() }
         return pathMonitor?.currentPath.status == .satisfied
     }
 
     // MARK: - NetworkMonitor Implementation
     public func startMonitoring() {
-        monitorQueue = DispatchQueue(label: "NetworkMonitor.\(UUID().uuidString)")
+        monitorQueue = DispatchQueue(label: "com.resideo.networkmonitor.queue")
         pathMonitor = NWPathMonitor()
         wasAvailable = nil  // Reset on start
 
