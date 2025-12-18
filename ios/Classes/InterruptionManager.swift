@@ -22,6 +22,7 @@ public protocol InterruptionManager {
     func setDelegate(_ delegate: InterruptionManagerDelegate?)
     func setNetworkLostDuringPhoneCall(_ value: Bool)
     func setCurrentSource(_ source: InterruptionSource)
+    func clearAllInterruptions()
 }
 
 /// Delegate for interruption manager events
@@ -125,6 +126,15 @@ public class InterruptionManagerImpl: InterruptionManager {
         lock.lock()
         _currentSource = source
         lock.unlock()
+    }
+
+    public func clearAllInterruptions() {
+        lock.lock()
+        _currentSource = .none
+        _networkLostDuringPhoneCall = false
+        lock.unlock()
+        cancelTimer()
+        print("⏸️ InterruptionManager: Cleared all interruptions and timers")
     }
 
     // MARK: - Private Methods

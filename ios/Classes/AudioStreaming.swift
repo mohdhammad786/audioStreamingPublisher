@@ -198,6 +198,7 @@ public class AudioStreaming {
         self.url = bits.joined(separator: "/")
         rtmpStream.delegate = myDelegate
         reconnectionManager.resetRetryCount()
+        interruptionManager.clearAllInterruptions()
 
         DispatchQueue.main.async {
             // Transition to connecting state BEFORE starting network monitor
@@ -221,7 +222,7 @@ public class AudioStreaming {
 
         // Reset state
         _ = stateMachine.transitionTo(.idle)
-        interruptionManager.cancelTimer()
+        interruptionManager.clearAllInterruptions()
         savedUrl = nil
         savedName = nil
 
@@ -231,7 +232,7 @@ public class AudioStreaming {
     }
 
     public func dispose() {
-        interruptionManager.cancelTimer()
+        interruptionManager.clearAllInterruptions()
         networkMonitor.stopMonitoring()
         phoneMonitor.stopMonitoring()
         NotificationCenter.default.removeObserver(self)
@@ -299,6 +300,9 @@ public class AudioStreaming {
             return
         }
 
+        // CLEAR ANY PENDING INTERRUPTION TIMERS
+        interruptionManager.clearAllInterruptions()
+
         let wasReconnecting = (stateMachine.currentState == .reconnecting)
 
         reconnectionManager.resetRetryCount()
@@ -338,6 +342,15 @@ public class AudioStreaming {
 
     private func handleConnectionFailure(event: Event) {
         let description = event.type.rawValue
+        print("❌ Connection failure: \(description)")
+
+        // If we were streaming, this is an interruption!
+        // This ensures the 30s timer starts even if NetworkMonitor hasn't fired yet
+        if stateMachine.currentState == .streaming {
+            print("Connection failed while streaming - treating as interruption")
+            beginInterruption(source: .network)
+            return
+        }
 
         guard reconnectionManager.shouldRetry(error: description) else {
             print("Max retries reached - giving up")
@@ -348,14 +361,17 @@ public class AudioStreaming {
         reconnectionManager.scheduleRetry(url: url ?? "") { [weak self] in
             guard let self = self else { return }
 
-            // Verify state before retrying
-            guard self.stateMachine.currentState == .connecting || self.stateMachine.currentState == .streaming else {
-                print("Retry aborted - state changed")
-                return
+            // If we are interrupted, we need to transition to RECONNECTING first
+            if self.stateMachine.currentState == .interrupted {
+                print("🔄 Transitioning from INTERRUPTED to RECONNECTING for retry")
+                _ = self.stateMachine.transitionTo(.reconnecting)
             }
 
-            if self.stateMachine.currentState == .interrupted {
-                print("Retry aborted - interrupted")
+            // Verify state before retrying
+            guard self.stateMachine.currentState == .connecting || 
+                  self.stateMachine.currentState == .reconnecting || 
+                  self.stateMachine.currentState == .streaming else {
+                print("Retry aborted - invalid state: \(self.stateMachine.currentState.description)")
                 return
             }
 
