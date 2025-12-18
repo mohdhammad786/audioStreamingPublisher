@@ -748,6 +748,14 @@ extension AudioStreaming {
 
         // Start timer
         interruptionManager.handleInterruptionBegan(source: source)
+
+        // PROACTIVE RECOVERY: If network is already available, trigger recovery immediately
+        if source == .network && networkMonitor.isNetworkAvailable {
+            print("🌐 Network already available - scheduling proactive recovery")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.handleNetworkAvailable()
+            }
+        }
     }
 
     private func endInterruption(source: InterruptionSource) {
