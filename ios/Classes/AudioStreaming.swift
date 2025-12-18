@@ -30,6 +30,8 @@ public class AudioStreaming {
     // MARK: - Connection State
     private var savedUrl: String?
     private var savedName: String?
+    private var reconnectionSource: InterruptionSource = .none
+    private let stateLock = NSLock()
 
     // MARK: - Initialization
     public init(
@@ -122,7 +124,7 @@ public class AudioStreaming {
 
         result(nil)
 
-        // Register for AVAudioSession interruptions (backup to CallKit)
+        // Register for AVAudioSession interruptions (PRIMARY detection mechanism)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleInterruption(_:)),
@@ -131,7 +133,7 @@ public class AudioStreaming {
         )
     }
 
-    // MARK: - Interruption Handling (Backup to CallKit)
+    // MARK: - Interruption Handling (PRIMARY: AVAudioSession)
     @objc private func handleInterruption(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
               let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -139,19 +141,20 @@ public class AudioStreaming {
             return
         }
 
-        print("AVAudioSession interruption: \(type == .began ? "BEGAN" : "ENDED")")
+        print("🎧 AVAudioSession interruption: \(type == .began ? "BEGAN" : "ENDED")")
 
-        // CallKit should handle this, but keep as backup
+        // PRIMARY phone detection mechanism (faster than CallKit)
         switch type {
         case .began:
+            print("🎧 Audio interruption began - treating as phone call (PRIMARY)")
             handlePhoneInterruptionBegan()
         case .ended:
-            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
-                return
-            }
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            if options.contains(.shouldResume) {
-                handlePhoneInterruptionEnded()
+            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) {
+                    print("🎧 Audio interruption ended - should resume")
+                    handlePhoneInterruptionEnded()
+                }
             }
         @unknown default:
             break
@@ -318,15 +321,19 @@ public class AudioStreaming {
         if wasReconnecting {
             reconnectionManager.notifySuccess()
 
+            // Use SAVED reconnection source, not current interruption source
             let event = reconnectionSource == .phoneCall ? "audio_resumed" : "network_resumed"
             let message = reconnectionSource == .phoneCall ?
                 "Stream resumed after phone call" :
                 "Stream resumed after network recovery"
 
+            // Reset reconnection source
+            reconnectionSource = .none
             savedUrl = nil
             savedName = nil
 
             sendEvent(event: event, message: message)
+            print("📢 Sent resume event: \(event)")
         }
     }
 
@@ -360,17 +367,21 @@ public class AudioStreaming {
     // MARK: - Reconnection
     private func reconnectStream() {
         guard let savedUrl = savedUrl, let savedName = savedName else {
-            print("No saved connection info")
+            print("❌ No saved connection info - cannot reconnect")
+            stateLock.lock()
+            reconnectionSource = .none
+            stateLock.unlock()
             _ = stateMachine.transitionTo(.idle)
             return
         }
 
+        // Verify we're actually in reconnecting state
         guard stateMachine.currentState == .reconnecting else {
-            print("Cannot reconnect from state: \(stateMachine.currentState.description)")
+            print("❌ Not in reconnecting state (current: \(stateMachine.currentState.description))")
             return
         }
 
-        print("Reconnecting to: \(savedUrl)/\(savedName)")
+        print("🔄 Reconnecting to: \(savedUrl)/\(savedName)")
 
         // Clean slate (prevent zombie streams)
         rtmpStream.attachAudio(nil)
@@ -501,21 +512,29 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
     private func handlePhoneInterruptionEnded() {
         print("📞 Phone Call Interruption Ended")
 
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         guard interruptionManager.currentSource == .phoneCall else {
+            print("⚠️ Phone interruption ended but current source is \(interruptionManager.currentSource)")
             return
         }
 
         // Check if network was lost during phone call
         if interruptionManager.hasNetworkLossDuringPhoneCall {
+            print("🌐 Network was lost during phone call")
             interruptionManager.setNetworkLostDuringPhoneCall(false)
 
             // Verify network is ACTUALLY down RIGHT NOW
             if !networkMonitor.isNetworkAvailable {
-                print("Network still down after phone call - switching to network interruption")
+                print("🌐 Network still down - switching to network interruption")
                 interruptionManager.setCurrentSource(.network)
+                reconnectionSource = .network // Update reconnection source
                 interruptionManager.handleInterruptionBegan(source: .network)
                 sendEvent(event: "network_interrupted", message: "Network unavailable after phone call ended")
                 return
+            } else {
+                print("🌐 Network is back - proceeding to reconnect")
             }
         }
 
@@ -565,16 +584,22 @@ extension AudioStreaming: NetworkMonitorDelegate {
     private func handleNetworkAvailable() {
         print("🌐 Network Available")
 
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         guard interruptionManager.currentSource == .network else {
+            print("⚠️ Network available but current source is \(interruptionManager.currentSource)")
             return
         }
 
         // Clear flag if network comes back during phone call
         if interruptionManager.hasNetworkLossDuringPhoneCall {
+            print("📞 Network came back during phone call - clearing flag")
             interruptionManager.setNetworkLostDuringPhoneCall(false)
             return
         }
 
+        print("🌐 Ending network interruption - will reconnect")
         endInterruption(source: .network)
     }
 }
@@ -585,13 +610,19 @@ extension AudioStreaming: InterruptionManagerDelegate {
         print("⏱️ Interruption timeout for \(source)")
 
         guard stateMachine.currentState == .interrupted else {
+            print("⚠️ Timeout but not in interrupted state")
             return
         }
+
+        // Reset ALL flags to clean state
+        interruptionManager.setNetworkLostDuringPhoneCall(false)
+        reconnectionSource = .none
 
         _ = stateMachine.transitionTo(.failed)
         savedUrl = nil
         savedName = nil
         sendEvent(event: "rtmp_stopped", message: "Stream stopped due to prolonged interruption")
+        print("📢 Sent rtmp_stopped event due to timeout")
     }
 }
 
@@ -626,10 +657,17 @@ extension AudioStreaming: StreamStateObserver {
 extension AudioStreaming {
     private func beginInterruption(source: InterruptionSource) {
         guard stateMachine.currentState == .streaming || stateMachine.currentState == .connecting else {
+            print("⚠️ Interruption requested but not streaming (state: \(stateMachine.currentState.description))")
             return
         }
 
-        _ = stateMachine.transitionTo(.interrupted)
+        // Save reconnection source BEFORE state transition
+        reconnectionSource = source
+
+        guard stateMachine.transitionTo(.interrupted) else {
+            print("❌ Failed to transition to interrupted state")
+            return
+        }
 
         // Store connection info
         savedUrl = self.url
@@ -640,12 +678,12 @@ extension AudioStreaming {
         rtmpConnection.close()
         deactivateAudioSession()
 
-        // Send event
+        // Send appropriate interruption event
         let event = source == .phoneCall ? "audio_interrupted" : "network_interrupted"
-        let message = source == .phoneCall ?
-            "Phone call detected - stream paused temporarily" :
-            "Network loss detected - stream paused temporarily"
+        let message = source == .phoneCall ? "Stream interrupted by phone call" : "Stream interrupted by network loss"
+
         sendEvent(event: event, message: message)
+        print("📢 Sent interruption event: \(event)")
 
         // Start timer
         interruptionManager.handleInterruptionBegan(source: source)

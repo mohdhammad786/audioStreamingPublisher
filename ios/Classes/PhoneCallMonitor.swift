@@ -85,20 +85,18 @@ public class PhoneCallMonitorImpl: NSObject, PhoneCallMonitor {
 // MARK: - CXCallObserverDelegate
 extension PhoneCallMonitorImpl: CXCallObserverDelegate {
     public func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
-        print("📞 PhoneCallMonitor: Call state changed - hasEnded:\(call.hasEnded) hasConnected:\(call.hasConnected)")
+        print("📞 CallKit: Call state changed - hasEnded:\(call.hasEnded) hasConnected:\(call.hasConnected) [SECONDARY VERIFICATION]")
 
         if call.hasEnded {
-            // Call ended
             _hasActiveCall = false
+            print("📞 CallKit: Call ended [SECONDARY]")
             delegate?.phoneCallDidEnd()
         } else if !call.hasEnded && !call.hasConnected {
-            // Call is ringing (not yet connected, not ended)
-            print("📞 PhoneCallMonitor: Phone RINGING detected - triggering interruption IMMEDIATELY")
+            print("📞 CallKit: Phone RINGING detected [SECONDARY - AVAudioSession should have fired first]")
             _hasActiveCall = true
             delegate?.phoneCallDidBegin()
         } else if call.hasConnected {
-            // Call was picked up (already handled by ringing state)
-            print("📞 PhoneCallMonitor: Call connected (already interrupted from ringing)")
+            print("📞 CallKit: Call connected [SECONDARY]")
             _hasActiveCall = true
         }
     }
