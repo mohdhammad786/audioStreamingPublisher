@@ -300,7 +300,6 @@ public class AudioStreaming {
         }
 
         let wasReconnecting = (stateMachine.currentState == .reconnecting)
-        let reconnectionSource = interruptionManager.currentSource
 
         reconnectionManager.resetRetryCount()
 
