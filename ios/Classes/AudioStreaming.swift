@@ -31,7 +31,7 @@ public class AudioStreaming {
     private var savedUrl: String?
     private var savedName: String?
     private var reconnectionSource: InterruptionSource = .none
-    private let stateLock = NSLock()
+    private let stateLock = NSRecursiveLock()
 
     // MARK: - Initialization
     public init(
@@ -333,16 +333,17 @@ public class AudioStreaming {
         if wasReconnecting {
             reconnectionManager.notifySuccess()
 
-            // Use SAVED reconnection source, not current interruption source
-            let event = reconnectionSource == .phoneCall ? "audio_resumed" : "network_resumed"
-            let message = reconnectionSource == .phoneCall ?
-                "Stream resumed after phone call" :
-                "Stream resumed after network recovery"
-
-            // Reset reconnection source
+            stateLock.lock()
+            let source = reconnectionSource
             reconnectionSource = .none
             savedUrl = nil
             savedName = nil
+            stateLock.unlock()
+
+            let event = source == .phoneCall ? "audio_resumed" : "network_resumed"
+            let message = source == .phoneCall ?
+                "Stream resumed after phone call" :
+                "Stream resumed after network recovery"
 
             sendEvent(event: event, message: message)
             print("📢 Sent resume event: \(event)")
@@ -733,19 +734,17 @@ extension AudioStreaming {
             return
         }
 
-        // Save reconnection source BEFORE state transition
+        // Save reconnection source and connection info BEFORE state transition
+        stateLock.lock()
         reconnectionSource = source
+        savedUrl = self.url
+        savedName = self.name
+        stateLock.unlock()
 
         guard stateMachine.transitionTo(.interrupted) else {
             print("❌ Failed to transition to interrupted state")
             return
         }
-
-        // Store connection info with lock
-        stateLock.lock()
-        savedUrl = self.url
-        savedName = self.name
-        stateLock.unlock()
 
         // Close stream (prevent zombie)
         rtmpStream?.attachAudio(nil)
