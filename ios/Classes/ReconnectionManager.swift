@@ -22,6 +22,10 @@ public protocol ReconnectionManager {
     func cancelReconnection()
     func resetRetryCount()
     func setDelegate(_ delegate: ReconnectionManagerDelegate?)
+    func shouldRetry(error: String) -> Bool
+    func scheduleRetry(url: String, completion: @escaping () -> Void)
+    func notifySuccess()
+    func notifyFailure(error: String)
 }
 
 /// Delegate for reconnection events
