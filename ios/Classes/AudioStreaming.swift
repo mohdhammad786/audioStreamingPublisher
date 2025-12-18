@@ -20,8 +20,8 @@ public class AudioStreaming {
     private let reconnectionManager: ReconnectionManager
 
     // MARK: - RTMP Properties
-    private var rtmpConnection = RTMPConnection()
-    private var rtmpStream: RTMPStream!
+    private var rtmpConnection: RTMPConnection
+    private var rtmpStream: RTMPStream?
     private var url: String? = nil
     private var name: String? = nil
     private let myDelegate = AudioStreamingQoSDelegate()
@@ -39,13 +39,17 @@ public class AudioStreaming {
         phoneMonitor: PhoneCallMonitor = PhoneCallMonitorImpl(),
         networkMonitor: NetworkMonitor = NetworkMonitorImpl(),
         interruptionManager: InterruptionManager = InterruptionManagerImpl(),
-        reconnectionManager: ReconnectionManager = ReconnectionManagerImpl()
+        reconnectionManager: ReconnectionManager = ReconnectionManagerImpl(),
+        rtmpConnection: RTMPConnection = RTMPConnection(),
+        rtmpStream: RTMPStream? = nil
     ) {
         self.stateMachine = stateMachine
         self.phoneMonitor = phoneMonitor
         self.networkMonitor = networkMonitor
         self.interruptionManager = interruptionManager
         self.reconnectionManager = reconnectionManager
+        self.rtmpConnection = rtmpConnection
+        self.rtmpStream = rtmpStream
 
         setupDelegates()
     }
@@ -96,7 +100,12 @@ public class AudioStreaming {
             return
         }
 
-        rtmpStream = RTMPStream(connection: rtmpConnection)
+        if self.rtmpStream == nil {
+            self.rtmpStream = RTMPStream(connection: rtmpConnection)
+        }
+
+        guard let rtmpStream = rtmpStream else { return }
+
         rtmpStream.attachAudio(AVCaptureDevice.default(for: AVMediaType.audio)) { error in
             print("Failed to attach audio: \(error)")
             result(FlutterError(
@@ -315,7 +324,7 @@ public class AudioStreaming {
         }
 
         // Publish BEFORE transitioning
-        rtmpStream.publish(streamName)
+        rtmpStream?.publish(streamName)
 
         // Transition to streaming
         _ = stateMachine.transitionTo(.streaming)
@@ -399,7 +408,7 @@ public class AudioStreaming {
         print("🔄 Reconnecting to: \(savedUrl)/\(savedName)")
 
         // Clean slate (prevent zombie streams)
-        rtmpStream.attachAudio(nil)
+        rtmpStream?.attachAudio(nil)
         rtmpConnection.close()
 
         // Re-setup audio session with retry logic
@@ -421,7 +430,7 @@ public class AudioStreaming {
             }
 
             // Re-attach audio
-            self.rtmpStream.attachAudio(AVCaptureDevice.default(for: AVMediaType.audio)) { [weak self] error in
+            self.rtmpStream?.attachAudio(AVCaptureDevice.default(for: AVMediaType.audio)) { [weak self] error in
                 print("❌ Failed to reattach audio: \(error)")
                 _ = self?.stateMachine.transitionTo(.failed)
                 self?.sendEvent(event: "error", message: "Failed to attach audio device")
@@ -491,33 +500,33 @@ public class AudioStreaming {
 
     // MARK: - Audio I/O (Existing methods preserved)
     public func pauseVideoStreaming() {
-        rtmpStream.paused = true
+        rtmpStream?.paused = true
     }
 
     public func resumeVideoStreaming() {
-        rtmpStream.paused = false
+        rtmpStream?.paused = false
     }
 
     public func isPaused() -> Bool {
-        return rtmpStream.paused
+        return rtmpStream?.paused ?? false
     }
 
     public func mute() {
-        rtmpStream.audioSettings = [
+        rtmpStream?.audioSettings = [
             .muted: true,
             .bitrate: 32 * 1000,
         ]
     }
 
     public func unmute() {
-        rtmpStream.audioSettings = [
+        rtmpStream?.audioSettings = [
             .muted: false,
             .bitrate: 32 * 1000,
         ]
     }
 
     public func appendAudioBuffer(_ buffer: CMSampleBuffer) {
-        rtmpStream.appendSampleBuffer(buffer, withType: .audio)
+        rtmpStream?.appendSampleBuffer(buffer, withType: .audio)
     }
 }
 
@@ -735,7 +744,7 @@ extension AudioStreaming {
         savedName = self.name
 
         // Close stream (prevent zombie)
-        rtmpStream.attachAudio(nil)
+        rtmpStream?.attachAudio(nil)
         rtmpConnection.close()
         deactivateAudioSession()
 
