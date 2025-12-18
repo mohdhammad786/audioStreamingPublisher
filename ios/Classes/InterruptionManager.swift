@@ -20,6 +20,8 @@ public protocol InterruptionManager {
     func handleInterruptionEnded(source: InterruptionSource)
     func cancelTimer()
     func setDelegate(_ delegate: InterruptionManagerDelegate?)
+    func setNetworkLostDuringPhoneCall(_ value: Bool)
+    func setCurrentSource(_ source: InterruptionSource)
 }
 
 /// Delegate for interruption manager events
