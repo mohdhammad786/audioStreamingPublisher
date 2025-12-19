@@ -16,6 +16,11 @@ enum class StreamState {
     PREPARING,
 
     /**
+     * Actively attempting to establish connection with the server.
+     */
+    CONNECTING,
+
+    /**
      * Actively streaming audio to the server.
      */
     STREAMING,

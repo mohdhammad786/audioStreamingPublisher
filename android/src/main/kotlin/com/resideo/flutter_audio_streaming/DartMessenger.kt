@@ -10,7 +10,7 @@ class DartMessenger(messenger: BinaryMessenger, id: String) {
     private var eventSink: EventSink? = null
 
     enum class EventType {
-        ERROR, CAMERA_CLOSING, RTMP_STOPPED, RTMP_RETRY, ROTATION_UPDATE,
+        ERROR, CAMERA_CLOSING, RTMP_STOPPED, RTMP_RETRY, RTMP_STARTED, ROTATION_UPDATE,
         AUDIO_INTERRUPTED, AUDIO_RESUMED,
         NETWORK_INTERRUPTED, NETWORK_RESUMED
     }
