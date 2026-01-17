@@ -8,9 +8,6 @@ import os
 import ReplayKit
 import VideoToolbox
 
-/// Main coordinator class for RTMP audio streaming
-/// Follows Clean Architecture and SOLID principles
-/// Coordinates between specialized components
 public class AudioStreaming {
     // MARK: - Dependencies (Injected Components)
     private let stateMachine: StreamStateMachine
@@ -32,6 +29,12 @@ public class AudioStreaming {
     private var savedName: String?
     private var reconnectionSource: InterruptionSource = .none
     private let stateLock = NSRecursiveLock()
+    
+    // MARK: - Audio Synchronization - CRITICAL FIX
+    private let audioQueue = DispatchQueue(label: "com.audiostreaming.audio", qos: .userInitiated)
+    private var isAudioAttached = false
+    private var isConfiguringAudio = false  // NEW: Prevent concurrent configuration
+    private let audioLock = NSLock()  // NEW: Dedicated lock for audio operations
 
     // MARK: - Initialization
     public init(
@@ -78,62 +81,65 @@ public class AudioStreaming {
             return
         }
 
-        let session = AVAudioSession.sharedInstance()
-        do {
-            if #available(iOS 10.0, *) {
-                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            } else {
-                session.perform(NSSelectorFromString("setCategory:withOptions:error:"), with: AVAudioSession.Category.playAndRecord, with: [
-                    AVAudioSession.CategoryOptions.allowBluetooth,
-                    AVAudioSession.CategoryOptions.defaultToSpeaker]
-                )
-                try session.setMode(.default)
+        // CRITICAL FIX: Configure audio session with proper error handling
+        configureAudioSession { [weak self] success, error in
+            guard let self = self else { return }
+            
+            guard success else {
+                result(FlutterError(
+                    code: "AUDIO_SESSION_ERROR",
+                    message: "Failed to configure audio session: \(error?.localizedDescription ?? "Unknown error")",
+                    details: nil
+                ))
+                return
             }
-            try session.setActive(true)
-        } catch {
-            print("Got error in setup: \(error)")
-            result(FlutterError(
-                code: "AUDIO_SESSION_ERROR",
-                message: "Failed to configure audio session: \(error.localizedDescription)",
-                details: nil
-            ))
-            return
+
+            if self.rtmpStream == nil {
+                self.rtmpStream = RTMPStream(connection: self.rtmpConnection)
+            }
+
+            guard let rtmpStream = self.rtmpStream else {
+                result(FlutterError(
+                    code: "STREAM_INIT_ERROR",
+                    message: "Failed to initialize RTMP stream",
+                    details: nil
+                ))
+                return
+            }
+
+            // CRITICAL FIX: Safe audio attachment with proper guards
+            self.safeAttachAudio(to: rtmpStream) { attachSuccess, attachError in
+                if let attachError = attachError {
+                    result(FlutterError(
+                        code: "AUDIO_ATTACH_ERROR",
+                        message: "Failed to attach audio device: \(attachError.localizedDescription)",
+                        details: nil
+                    ))
+                    return
+                }
+                
+                // Configure stream settings AFTER successful attachment
+                rtmpStream.audioSettings = [
+                    .muted: false,
+                    .bitrate: 32 * 1000,
+                ]
+
+                rtmpStream.recorderSettings = [
+                    AVMediaType.audio: [
+                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                        AVSampleRateKey: 0,
+                        AVNumberOfChannelsKey: 0,
+                    ],
+                ]
+
+                // Start monitoring
+                self.phoneMonitor.startMonitoring()
+
+                result(nil)
+            }
         }
 
-        if self.rtmpStream == nil {
-            self.rtmpStream = RTMPStream(connection: rtmpConnection)
-        }
-
-        guard let rtmpStream = rtmpStream else { return }
-
-        rtmpStream.attachAudio(AVCaptureDevice.default(for: AVMediaType.audio)) { error in
-            print("Failed to attach audio: \(error)")
-            result(FlutterError(
-                code: "AUDIO_ATTACH_ERROR",
-                message: "Failed to attach audio device: \(error.localizedDescription)",
-                details: nil
-            ))
-        }
-
-        rtmpStream.audioSettings = [
-            .muted: false,
-            .bitrate: 32 * 1000,
-        ]
-
-        rtmpStream.recorderSettings = [
-            AVMediaType.audio: [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: 0,
-                AVNumberOfChannelsKey: 0,
-            ],
-        ]
-
-        // Start monitoring
-        phoneMonitor.startMonitoring()
-
-        result(nil)
-
-        // Register for AVAudioSession interruptions (PRIMARY detection mechanism)
+        // Register for AVAudioSession interruptions
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleInterruption(_:)),
@@ -141,8 +147,148 @@ public class AudioStreaming {
             object: AVAudioSession.sharedInstance()
         )
     }
+    
+    // MARK: - CRITICAL FIX: Safe Audio Configuration
+    
+    /// Safely configures audio session with proper error handling
+    private func configureAudioSession(completion: @escaping (Bool, Error?) -> Void) {
+        audioQueue.async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async { completion(false, nil) }
+                return
+            }
+            
+            let session = AVAudioSession.sharedInstance()
+            do {
+                if #available(iOS 10.0, *) {
+                    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+                } else {
+                    session.perform(NSSelectorFromString("setCategory:withOptions:error:"), with: AVAudioSession.Category.playAndRecord, with: [
+                        AVAudioSession.CategoryOptions.allowBluetooth,
+                        AVAudioSession.CategoryOptions.defaultToSpeaker]
+                    )
+                    try session.setMode(.default)
+                }
+                try session.setActive(true)
+                
+                print("✅ Audio session configured successfully")
+                DispatchQueue.main.async { completion(true, nil) }
+            } catch {
+                print("❌ Audio session configuration failed: \(error)")
+                DispatchQueue.main.async { completion(false, error) }
+            }
+        }
+    }
+    
+    /// Safely attaches audio with guards against concurrent operations
+    private func safeAttachAudio(to stream: RTMPStream, completion: @escaping (Bool, Error?) -> Void) {
+        audioLock.lock()
+        
+        // CRITICAL: Prevent concurrent audio configuration
+        guard !isConfiguringAudio else {
+            audioLock.unlock()
+            print("⚠️ Audio configuration already in progress")
+            DispatchQueue.main.async {
+                completion(false, NSError(domain: "AudioStreaming", code: -1, userInfo: [NSLocalizedDescriptionKey: "Audio configuration in progress"]))
+            }
+            return
+        }
+        
+        guard !isAudioAttached else {
+            audioLock.unlock()
+            print("⚠️ Audio already attached")
+            DispatchQueue.main.async { completion(true, nil) }
+            return
+        }
+        
+        isConfiguringAudio = true
+        audioLock.unlock()
+        
+        audioQueue.async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async { completion(false, nil) }
+                return
+            }
+            
+            // Get audio device
+            guard let audioDevice = AVCaptureDevice.default(for: AVMediaType.audio) else {
+                self.audioLock.lock()
+                self.isConfiguringAudio = false
+                self.audioLock.unlock()
+                
+                let error = NSError(domain: "AudioStreaming", code: -2, userInfo: [NSLocalizedDescriptionKey: "No audio device available"])
+                DispatchQueue.main.async { completion(false, error) }
+                return
+            }
+            
+            // Attach with error handling
+            stream.attachAudio(audioDevice) { error in
+                self.audioLock.lock()
+                self.isConfiguringAudio = false
+                self.audioLock.unlock()
+                
+                DispatchQueue.main.async {
+                    print("❌ Failed to attach audio: \(error)")
+                    completion(false, error)
+                }
+                return
+            }
+            
+            // Wait for attachment to complete (HaishinKit internal processing)
+            Thread.sleep(forTimeInterval: 0.2)
+            
+            self.audioLock.lock()
+            self.isAudioAttached = true
+            self.isConfiguringAudio = false
+            self.audioLock.unlock()
+            
+            print("✅ Audio attached successfully")
+            DispatchQueue.main.async { completion(true, nil) }
+        }
+    }
+    
+    /// Safely detaches audio with proper synchronization
+    private func safeDetachAudio(from stream: RTMPStream?, completion: (() -> Void)? = nil) {
+        audioLock.lock()
+        
+        guard isAudioAttached else {
+            audioLock.unlock()
+            completion?()
+            return
+        }
+        
+        // Wait if configuration is in progress
+        while isConfiguringAudio {
+            audioLock.unlock()
+            Thread.sleep(forTimeInterval: 0.05)
+            audioLock.lock()
+        }
+        
+        isConfiguringAudio = true
+        audioLock.unlock()
+        
+        audioQueue.async { [weak self] in
+            guard let self = self else {
+                completion?()
+                return
+            }
+            
+            stream?.attachAudio(nil)
+            
+            // Wait for detachment to complete
+            Thread.sleep(forTimeInterval: 0.2)
+            
+            self.audioLock.lock()
+            self.isAudioAttached = false
+            self.isConfiguringAudio = false
+            self.audioLock.unlock()
+            
+            print("✅ Audio detached successfully")
+            completion?()
+        }
+    }
 
-    // MARK: - Interruption Handling (PRIMARY: AVAudioSession)
+    // MARK: - Interruption Handling
     @objc private func handleInterruption(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
               let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -152,7 +298,6 @@ public class AudioStreaming {
 
         print("🎧 AVAudioSession interruption: \(type == .began ? "BEGAN" : "ENDED")")
 
-        // PRIMARY phone detection mechanism (faster than CallKit)
         switch type {
         case .began:
             print("🎧 Audio interruption began - treating as phone call (PRIMARY)")
@@ -172,7 +317,6 @@ public class AudioStreaming {
 
     // MARK: - Streaming Control
     public func start(url: String, result: @escaping FlutterResult) {
-        // Guard against starting from non-idle state
         guard stateMachine.currentState == .idle else {
             print("Cannot start - stream is in state: \(stateMachine.currentState.description)")
             if stateMachine.currentState == .interrupted || stateMachine.currentState == .reconnecting {
@@ -182,12 +326,11 @@ public class AudioStreaming {
                     details: nil
                 ))
             } else {
-                result(nil)  // Already streaming, ignore
+                result(nil)
             }
             return
         }
 
-        // Check if there's an active phone call
         if phoneMonitor.isPhoneCallActive {
             result(FlutterError(
                 code: "PHONE_CALL_ACTIVE",
@@ -210,7 +353,6 @@ public class AudioStreaming {
         interruptionManager.clearAllInterruptions()
 
         DispatchQueue.main.async {
-            // Transition to connecting state BEFORE starting network monitor
             _ = self.stateMachine.transitionTo(.connecting)
             self.networkMonitor.startMonitoring()
             self.rtmpConnection.connect(self.url ?? "")
@@ -219,25 +361,24 @@ public class AudioStreaming {
     }
 
     public func stop() {
-        // Remove event listeners
         rtmpConnection.removeEventListener(.rtmpStatus, selector: #selector(rtmpStatusHandler), observer: self)
         rtmpConnection.removeEventListener(.ioError, selector: #selector(rtmpErrorHandler), observer: self)
 
-        // Stop monitoring
         networkMonitor.stopMonitoring()
 
-        // Detach audio
-        rtmpStream?.attachAudio(nil)
-
-        // Reset state
-        _ = stateMachine.transitionTo(.idle)
-        interruptionManager.clearAllInterruptions()
-        savedUrl = nil
-        savedName = nil
-
-        // Close connection
-        rtmpConnection.close()
-        deactivateAudioSession()
+        // CRITICAL FIX: Safe audio detachment
+        safeDetachAudio(from: rtmpStream) { [weak self] in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                _ = self.stateMachine.transitionTo(.idle)
+                self.interruptionManager.clearAllInterruptions()
+                self.savedUrl = nil
+                self.savedName = nil
+                self.rtmpConnection.close()
+                self.deactivateAudioSession()
+            }
+        }
     }
 
     public func dispose() {
@@ -245,6 +386,14 @@ public class AudioStreaming {
         networkMonitor.stopMonitoring()
         phoneMonitor.stopMonitoring()
         NotificationCenter.default.removeObserver(self)
+        
+        // CRITICAL FIX: Synchronous cleanup
+        let semaphore = DispatchSemaphore(value: 0)
+        safeDetachAudio(from: rtmpStream) {
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 2.0)
+        
         deactivateAudioSession()
         rtmpStream = nil
         rtmpConnection = RTMPConnection()
@@ -263,13 +412,9 @@ public class AudioStreaming {
         switch code {
         case RTMPConnection.Code.connectSuccess.rawValue:
             handleConnectionSuccess()
-            break
-
         case RTMPConnection.Code.connectFailed.rawValue,
              RTMPConnection.Code.connectClosed.rawValue:
             handleConnectionFailure(event: e)
-            break
-
         default:
             break
         }
@@ -279,7 +424,6 @@ public class AudioStreaming {
         let e = Event.from(notification)
         print("RTMP Error: \(e.type.rawValue)")
 
-        // Check if network-related error
         let description = e.type.rawValue
         if isNetworkRelatedError(description: description) {
             let isOffline = !networkMonitor.isNetworkAvailable
@@ -290,13 +434,11 @@ public class AudioStreaming {
             }
         }
 
-        // Handle retry logic
         handleConnectionFailure(event: e)
     }
 
     // MARK: - Connection Success/Failure
     private func handleConnectionSuccess() {
-        // Guard: Abort if interrupted during connection
         if stateMachine.currentState == .interrupted {
             print("Connection success arrived but we are INTERRUPTED - ignoring")
             rtmpConnection.close()
@@ -309,27 +451,19 @@ public class AudioStreaming {
             return
         }
 
-        // CLEAR ANY PENDING INTERRUPTION TIMERS
         interruptionManager.clearAllInterruptions()
-
         let wasReconnecting = (stateMachine.currentState == .reconnecting)
-
         reconnectionManager.resetRetryCount()
 
-        // Determine stream name
         let streamName = savedName ?? name
         guard let streamName = streamName else {
             print("No stream name available")
             return
         }
 
-        // Publish BEFORE transitioning
         rtmpStream?.publish(streamName)
-
-        // Transition to streaming
         _ = stateMachine.transitionTo(.streaming)
 
-        // Send events AFTER state is stable
         if wasReconnecting {
             reconnectionManager.notifySuccess()
 
@@ -354,8 +488,6 @@ public class AudioStreaming {
         let description = event.type.rawValue
         print("❌ Connection failure: \(description)")
 
-        // If we were streaming, this is an interruption!
-        // This ensures the 30s timer starts even if NetworkMonitor hasn't fired yet
         if stateMachine.currentState == .streaming {
             print("Connection failed while streaming - treating as interruption")
             beginInterruption(source: .network)
@@ -371,13 +503,11 @@ public class AudioStreaming {
         reconnectionManager.scheduleRetry(url: url ?? "") { [weak self] in
             guard let self = self else { return }
 
-            // If we are interrupted, we need to transition to RECONNECTING first
             if self.stateMachine.currentState == .interrupted {
                 print("🔄 Transitioning from INTERRUPTED to RECONNECTING for retry")
                 _ = self.stateMachine.transitionTo(.reconnecting)
             }
 
-            // Verify state before retrying
             guard self.stateMachine.currentState == .connecting || 
                   self.stateMachine.currentState == .reconnecting || 
                   self.stateMachine.currentState == .streaming else {
@@ -405,7 +535,6 @@ public class AudioStreaming {
             return
         }
 
-        // Verify we're actually in reconnecting state
         guard stateMachine.currentState == .reconnecting else {
             print("❌ Not in reconnecting state (current: \(stateMachine.currentState.description))")
             return
@@ -413,43 +542,54 @@ public class AudioStreaming {
 
         print("🔄 Reconnecting to: \(savedUrl)/\(savedName)")
 
-        // Clean slate (prevent zombie streams)
-        rtmpStream?.attachAudio(nil)
-        rtmpConnection.close()
-
-        // Re-setup audio session with retry logic
-        activateAudioSessionWithRetry { [weak self] success in
+        // CRITICAL FIX: Safe cleanup before reconnection
+        safeDetachAudio(from: rtmpStream) { [weak self] in
             guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                self.rtmpConnection.close()
+                
+                // Re-setup audio session with retry logic
+                self.activateAudioSessionWithRetry { [weak self] success in
+                    guard let self = self else { return }
 
-            // Verify we're still in reconnecting state (not cancelled by stop/dispose)
-            guard self.stateMachine.currentState == .reconnecting else {
-                print("⚠️ Reconnection aborted - state changed to \(self.stateMachine.currentState.description)")
-                return
+                    guard self.stateMachine.currentState == .reconnecting else {
+                        print("⚠️ Reconnection aborted - state changed to \(self.stateMachine.currentState.description)")
+                        return
+                    }
+
+                    guard success else {
+                        print("❌ Failed to activate audio session after retries")
+                        _ = self.stateMachine.transitionTo(.failed)
+                        self.sendEvent(event: "error", message: "Audio session activation failed after phone call")
+                        return
+                    }
+
+                    // CRITICAL FIX: Safe re-attachment
+                    guard let rtmpStream = self.rtmpStream else {
+                        print("❌ RTMP stream is nil")
+                        _ = self.stateMachine.transitionTo(.failed)
+                        return
+                    }
+                    
+                    self.safeAttachAudio(to: rtmpStream) { [weak self] attachSuccess, attachError in
+                        guard let self = self else { return }
+                        
+                        if let attachError = attachError {
+                            print("❌ Failed to reattach audio: \(attachError)")
+                            _ = self.stateMachine.transitionTo(.failed)
+                            self.sendEvent(event: "error", message: "Failed to attach audio device")
+                            return
+                        }
+                        
+                        print("🔄 Connecting to RTMP server...")
+                        self.rtmpConnection.connect(savedUrl)
+                    }
+                }
             }
-
-            guard success else {
-                print("❌ Failed to activate audio session after retries")
-                _ = self.stateMachine.transitionTo(.failed)
-                self.sendEvent(event: "error", message: "Audio session activation failed after phone call")
-                return
-            }
-
-            // Re-attach audio
-            self.rtmpStream?.attachAudio(AVCaptureDevice.default(for: AVMediaType.audio)) { [weak self] error in
-                print("❌ Failed to reattach audio: \(error)")
-                _ = self?.stateMachine.transitionTo(.failed)
-                self?.sendEvent(event: "error", message: "Failed to attach audio device")
-                return
-            }
-
-            // Reconnect
-            print("🔄 Connecting to RTMP server...")
-            self.rtmpConnection.connect(savedUrl)
         }
     }
 
-    /// Activates audio session with retry logic to handle iOS timing issues
-    /// iOS may not immediately release the audio session after a phone call ends
     private func activateAudioSessionWithRetry(attempt: Int = 0, maxAttempts: Int = 5, completion: @escaping (Bool) -> Void) {
         let session = AVAudioSession.sharedInstance()
 
@@ -458,7 +598,6 @@ public class AudioStreaming {
             print("✅ Audio session activated successfully (attempt \(attempt + 1))")
             completion(true)
         } catch {
-            // Check if we should still be attempting (state hasn't changed to idle/failed)
             guard stateMachine.currentState == .reconnecting || stateMachine.currentState == .connecting else {
                 print("⚠️ Aborting audio session retry - state is \(stateMachine.currentState.description)")
                 completion(false)
@@ -466,7 +605,7 @@ public class AudioStreaming {
             }
 
             if attempt < maxAttempts {
-                let delay = pow(2.0, Double(attempt)) * 0.1 // 100ms, 200ms, 400ms...
+                let delay = pow(2.0, Double(attempt)) * 0.1
                 print("⚠️ Audio session activation failed (attempt \(attempt + 1)/\(maxAttempts)): \(error)")
                 print("🔄 Retrying in \(Int(delay * 1000))ms...")
 
@@ -509,7 +648,7 @@ public class AudioStreaming {
         }
     }
 
-    // MARK: - Audio I/O (Existing methods preserved)
+    // MARK: - Audio I/O
     public func pauseVideoStreaming() {
         rtmpStream?.paused = true
     }
@@ -554,7 +693,6 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
     private func handlePhoneInterruptionBegan() {
         print("📞 Phone Call Interruption Began")
 
-        // Edge Case 1: Network interrupted, now phone rings
         if stateMachine.currentState == .interrupted && interruptionManager.currentSource == .network {
             print("Switching from network to phone interruption")
             interruptionManager.cancelTimer()
@@ -564,7 +702,6 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
             return
         }
 
-        // Edge Case 2: Reconnecting from network, phone rings
         if stateMachine.currentState == .reconnecting && interruptionManager.currentSource == .network {
             print("Phone call during network reconnection")
             rtmpConnection.close()
@@ -590,7 +727,6 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
             return
         }
 
-        // Check if network was lost during phone call (Scenario 3)
         interruptionManager.handleInterruptionEnded(source: .phoneCall)
         
         if interruptionManager.currentSource == .network {
@@ -617,13 +753,11 @@ extension AudioStreaming: NetworkMonitorDelegate {
     private func handleNetworkLost() {
         print("🌐 Network Lost")
 
-        // Case 1: During phone call
         if interruptionManager.currentSource == .phoneCall {
             interruptionManager.setNetworkLostDuringPhoneCall(true)
             return
         }
 
-        // Case 2: During reconnection
         if stateMachine.currentState == .reconnecting && savedUrl != nil {
             print("Network lost during reconnection")
             rtmpConnection.close()
@@ -634,7 +768,6 @@ extension AudioStreaming: NetworkMonitorDelegate {
             return
         }
 
-        // Case 3: During active stream
         guard stateMachine.currentState == .streaming || stateMachine.currentState == .connecting else {
             return
         }
@@ -646,7 +779,6 @@ extension AudioStreaming: NetworkMonitorDelegate {
     private func handleNetworkAvailable() {
         print("🌐 Network Available")
 
-        // Must be in interrupted state to reconnect
         guard stateMachine.currentState == .interrupted else {
             print("🌐 Network available but not in interrupted state (current: \(stateMachine.currentState.description))")
             return
@@ -657,7 +789,6 @@ extension AudioStreaming: NetworkMonitorDelegate {
 
         let currentSource = interruptionManager.currentSource
 
-        // Handle network recovery during phone call (phone call takes priority)
         if currentSource == .phoneCall {
             if interruptionManager.hasNetworkLossDuringPhoneCall {
                 print("📞 Network came back during phone call - clearing flag, will reconnect after call")
@@ -666,7 +797,6 @@ extension AudioStreaming: NetworkMonitorDelegate {
             return
         }
 
-        // Must be network interruption to proceed
         guard currentSource == .network else {
             print("⚠️ Network available but current source is \(currentSource) - cannot reconnect")
             return
@@ -687,7 +817,6 @@ extension AudioStreaming: InterruptionManagerDelegate {
             return
         }
 
-        // Reset ALL flags to clean state
         interruptionManager.setNetworkLostDuringPhoneCall(false)
         reconnectionSource = .none
 
@@ -722,7 +851,6 @@ extension AudioStreaming: ReconnectionManagerDelegate {
 extension AudioStreaming: StreamStateObserver {
     public func streamStateDidChange(from oldState: StreamState, to newState: StreamState) {
         print("🔄 State changed: \(oldState.description) -> \(newState.description)")
-        // Can add additional logic here based on state changes
     }
 }
 
@@ -734,7 +862,6 @@ extension AudioStreaming {
             return
         }
 
-        // Save reconnection source and connection info BEFORE state transition
         stateLock.lock()
         reconnectionSource = source
         savedUrl = self.url
@@ -746,22 +873,24 @@ extension AudioStreaming {
             return
         }
 
-        // Close stream (prevent zombie)
-        rtmpStream?.attachAudio(nil)
-        rtmpConnection.close()
-        deactivateAudioSession()
+        // CRITICAL FIX: Safe cleanup during interruption
+        safeDetachAudio(from: rtmpStream) { [weak self] in
+            guard let self = self else { return }
+            
+            DispatchQueue.main.async {
+                self.rtmpConnection.close()
+                self.deactivateAudioSession()
+            }
+        }
 
-        // Send appropriate interruption event
         let event = source == .phoneCall ? "audio_interrupted" : "network_interrupted"
         let message = source == .phoneCall ? "Stream interrupted by phone call" : "Stream interrupted by network loss"
 
         sendEvent(event: event, message: message)
         print("📢 Sent interruption event: \(event)")
 
-        // Start timer
         interruptionManager.handleInterruptionBegan(source: source)
 
-        // PROACTIVE RECOVERY: If network is already available, trigger recovery immediately
         if source == .network && networkMonitor.isNetworkAvailable {
             print("🌐 Network already available - scheduling proactive recovery")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -781,7 +910,7 @@ extension AudioStreaming {
     }
 }
 
-// MARK: - QoS Delegate (Preserved from original)
+// MARK: - QoS Delegate
 class AudioStreamingQoSDelegate: RTMPStreamDelegate {
     let minBitrate: UInt32 = 300 * 1024
     let maxBitrate: UInt32 = 2500 * 1024
@@ -795,28 +924,15 @@ class AudioStreamingQoSDelegate: RTMPStreamDelegate {
         return 32 * 1000
     }
 
-    // MARK: - RTMPStreamDelegate Required Methods
-    func rtmpStream(_ stream: RTMPStream, didPublishInsufficientBW connection: RTMPConnection) {
-        // No video streaming, audio bitrate is fixed
-    }
-
-    func rtmpStream(_ stream: RTMPStream, didPublishSufficientBW connection: RTMPConnection) {
-        // No video streaming, audio bitrate is fixed
-    }
-
-    func rtmpStream(_ stream: RTMPStream, didStatics connection: RTMPConnection) {
-        // Statistics monitoring - not needed for audio-only streaming
-    }
-
-    func rtmpStreamDidClear(_ stream: RTMPStream) {
-        // Stream cleared - not needed for audio-only streaming
-    }
-
-    func rtmpStream(_ stream: RTMPStream, didOutput audio: AVAudioBuffer, presentationTimeStamp: CMTime) {
-        // Audio output monitoring - not needed
-    }
-
-    func rtmpStream(_ stream: RTMPStream, didOutput video: CMSampleBuffer) {
-        // No video streaming
-    }
+    func rtmpStream(_ stream: RTMPStream, didPublishInsufficientBW connection: RTMPConnection) {}
+    
+    func rtmpStream(_ stream: RTMPStream, didPublishSufficientBW connection: RTMPConnection) {}
+    
+    func rtmpStream(_ stream: RTMPStream, didStatics connection: RTMPConnection) {}
+    
+    func rtmpStreamDidClear(_ stream: RTMPStream) {}
+    
+    func rtmpStream(_ stream: RTMPStream, didOutput audio: AVAudioBuffer, presentationTimeStamp: CMTime) {}
+    
+    func rtmpStream(_ stream: RTMPStream, didOutput video: CMSampleBuffer) {}
 }
