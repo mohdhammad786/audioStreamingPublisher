@@ -71,6 +71,7 @@ class AudioFocusManager(
             AudioManager.AUDIOFOCUS_GAIN -> {
                 Log.d(TAG, "Audio Focus Gained")
                 hasFocus = true
+                mediator.onPhoneInterruptionEnded()
             }
         }
     }

@@ -538,6 +538,14 @@ public class AudioStreaming {
             beginInterruption(source: .network)
             return
         }
+        
+        // CRITICAL FIX: Ignore connection failures/closures while in interrupted state.
+        // We are waiting for network/phone to resolve, or for the interruption timer to expire.
+        // Retrying here would cause a loop of attempts while the network is down.
+        if stateMachine.currentState == .interrupted {
+            print("Connection failed/closed while interrupted - ignoring (waiting for recovery)")
+            return
+        }
 
         guard reconnectionManager.shouldRetry(error: description) else {
             print("Max retries reached - giving up")
