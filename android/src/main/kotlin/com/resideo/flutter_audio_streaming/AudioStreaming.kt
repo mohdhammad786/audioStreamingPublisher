@@ -137,9 +137,11 @@ class AudioStreaming(
     }
 
     override fun onAudioFocusLostPermanently() {
-        Log.w(TAG, "Mediator: Audio Focus Lost Permanently")
-        if (currentState != StreamState.INTERRUPTED && currentState != StreamState.RECONNECTING) {
-            stopStreaming(null)
+        Log.w(TAG, "Mediator: Audio Focus Lost Permanently - Treating as Interruption")
+        // Treat permanent loss as interruption (e.g. Camera recording)
+        // This allows us to resume if the user comes back to the app.
+        if (currentState == StreamState.STREAMING || currentState == StreamState.RECONNECTING) {
+            handlePhoneInterruptionBegan()
         }
     }
 
@@ -668,6 +670,17 @@ class AudioStreaming(
         if (activity === this.activity) {
             isInForeground = true
             isActivityValid = true  // Activity is valid again
+
+            // Fix for Camera/External App Interruption
+            // If we are interrupted by "PhoneCall" (which includes Audio Focus loss)
+            // but there is no actual GSM call, and we just resumed, try to resume streaming.
+            if (currentState == StreamState.INTERRUPTED && currentInterruptionSource == InterruptionSource.PHONE_CALL) {
+                 if (!phoneCallManager.isCallActive) {
+                     Log.i(TAG, "Resumed while interrupted by AudioFocus/Camera - attempting resume")
+                     handlePhoneInterruptionEnded()
+                     return
+                 }
+            }
 
             if (pendingReconnectOnResume) {
                 Log.d(TAG, "Resumed with pending reconnect")
