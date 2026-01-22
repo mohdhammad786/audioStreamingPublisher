@@ -146,6 +146,14 @@ public class AudioStreaming {
             name: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance()
         )
+        
+        // Register for App Lifecycle to handle stuck interruptions
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
     }
     
     // MARK: - CRITICAL FIX: Safe Audio Configuration
@@ -496,7 +504,15 @@ public class AudioStreaming {
 
         guard reconnectionManager.shouldRetry(error: description) else {
             print("Max retries reached - giving up")
-            sendEvent(event: "error", message: "Connection failed after retries: \(description)")
+            // Fix for Issue 3: Stale state
+            // Explicitly transition to failed and send stopped event so UI updates
+            _ = stateMachine.transitionTo(.failed)
+            sendEvent(event: "rtmp_stopped", message: "Connection failed after retries: \(description)")
+            
+            // Also ensure we clean up resources
+            rtmpConnection.close()
+            savedUrl = nil
+            savedName = nil
             return
         }
 

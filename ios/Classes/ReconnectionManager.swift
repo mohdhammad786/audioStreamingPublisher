@@ -8,7 +8,7 @@ public struct ReconnectionConfig {
     let exponentialBackoff: Bool
 
     public static let `default` = ReconnectionConfig(
-        maxRetries: 3,
+        maxRetries: 6,
         exponentialBackoff: true
     )
 }
