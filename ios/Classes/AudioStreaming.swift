@@ -316,10 +316,47 @@ public class AudioStreaming {
                 if options.contains(.shouldResume) {
                     print("🎧 Audio interruption ended - should resume")
                     handlePhoneInterruptionEnded()
+                } else {
+                     print("🎧 Audio interruption ended - resume option missing, checking if we can resume anyway")
+                     // Some apps/scenarios don't set shouldResume but we should try if we are active
+                     if UIApplication.shared.applicationState == .active {
+                         handlePhoneInterruptionEnded()
+                     }
                 }
             }
         @unknown default:
             break
+        }
+    }
+    
+    @objc private func handleApplicationDidBecomeActive() {
+        print("📱 Application did become active")
+        
+        // Fix for Issue 2: Interruption state stuck after camera/phone usage
+        // If we are stuck in interrupted state (PhoneCall) but the app is now active,
+        // force a check to see if we should resume.
+        
+        guard stateMachine.currentState == .interrupted else { return }
+        
+        stateLock.lock()
+        let currentSource = interruptionManager.currentSource
+        stateLock.unlock()
+        
+        if currentSource == .phoneCall {
+            print("📱 Active while interrupted by PhoneCall - forcing resume check")
+            // We can assume if we are active, the camera/phone call UI is gone.
+            // However, we should be careful about actual phone calls.
+            // But 'phoneMonitor' handles actual GSM calls.
+            // 'InterruptionManager' source .phoneCall is also used for AVAudioSession interruptions (Camera).
+            
+            // Double check if an actual phone call is active
+            if phoneMonitor.isPhoneCallActive {
+                print("📱 Actual phone call still active - ignoring")
+                return
+            }
+            
+            // If no actual phone call, it was likely Camera or other audio interruption that is now over.
+            handlePhoneInterruptionEnded()
         }
     }
 
