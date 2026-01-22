@@ -1,7 +1,7 @@
 package com.resideo.flutter_audio_streaming
 
 /**
- * Represents the various states of the RTSP Audio Stream.
+ * Represents the various states of the RTMP Audio Stream.
  * Using a state machine helps prevent invalid transitions and race conditions.
  */
 enum class StreamState {
@@ -11,7 +11,7 @@ enum class StreamState {
     IDLE,
 
     /**
-     * Preparing components (AudioRecorder, Encoder, RTSP Client).
+     * Preparing components (AudioRecorder, Encoder, RTMP Client).
      */
     PREPARING,
 

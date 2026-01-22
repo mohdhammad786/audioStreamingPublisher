@@ -60,7 +60,7 @@ class NetworkMonitor(
             registerNetworkCallback()
         } else {
             Log.w(TAG, "Network monitoring requires API 24+. Falling back to reactive detection.")
-            // For older APIs, we'll rely on RTSP failure detection only
+            // For older APIs, we'll rely on RTMP failure detection only
             return
         }
 

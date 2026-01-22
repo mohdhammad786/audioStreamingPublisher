@@ -7,7 +7,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import com.pedro.rtsp.utils.ConnectCheckerRtsp
+import com.pedro.rtmp.utils.ConnectCheckerRtmp
 import io.flutter.plugin.common.MethodChannel
 import java.io.IOException
 
@@ -18,7 +18,7 @@ class AudioStreaming(
     private val phoneMonitor: PhoneCallMonitorInterface? = null,
     private val networkMonitorInterface: NetworkMonitorInterface? = null,
     private val audioFocusMonitor: AudioFocusMonitorInterface? = null
-) : ConnectCheckerRtsp, Application.ActivityLifecycleCallbacks, StreamingMediator {
+) : ConnectCheckerRtmp, Application.ActivityLifecycleCallbacks, StreamingMediator {
 
     companion object {
         private const val TAG = "AudioStreaming"
@@ -34,8 +34,8 @@ class AudioStreaming(
     private val application: Application?
         get() = applicationContext as? Application
 
-    // RTSP Client (DIP: Use interface if provided, otherwise default)
-    private val rtspAudio: StreamingClient = client ?: RtspClientImpl(this)
+    // RTMP Client (DIP: Use interface if provided, otherwise default)
+    private val rtmpAudio: StreamingClient = client ?: RtmpClientImpl(this)
 
     // Managers (DIP: Use interfaces if provided, otherwise default)
     private val audioFocusManager: AudioFocusMonitorInterface = audioFocusMonitor ?: AudioFocusManager(context, this)
@@ -181,7 +181,7 @@ class AudioStreaming(
     }
 
     private fun prepareInternal(): Boolean {
-        return rtspAudio.prepareAudio(
+        return rtmpAudio.prepareAudio(
             this.bitrate ?: (128 * 1024),
             this.sampleRate ?: 44100,
             this.isStereo ?: true,
@@ -192,7 +192,7 @@ class AudioStreaming(
     
     fun getStatistics(result: MethodChannel.Result) {
         val ret = hashMapOf<String, Any>()
-        // TODO: Implement actual statistics from RtspOnlyAudio if available
+        // TODO: Implement actual statistics from the underlying RTMP audio client if available
         result.success(ret)
     }
 
@@ -218,9 +218,9 @@ class AudioStreaming(
         }
 
         try {
-            if (!rtspAudio.isStreaming) {
+            if (!rtmpAudio.isStreaming) {
                 if (prepareInternal()) {
-                    rtspAudio.startStream(url)
+                    rtmpAudio.startStream(url)
                     
                     // Update State first
                     transitionTo(StreamEvent.StartRequested) 
@@ -275,10 +275,10 @@ class AudioStreaming(
             isNetworkLost = false
             isPhoneCallActive = false
             
-            // Clean up RTSP
+            // Clean up RTMP
             try {
-                if (rtspAudio.isStreaming) {
-                    rtspAudio.stopStream()
+                if (rtmpAudio.isStreaming) {
+                    rtmpAudio.stopStream()
                 }
             } catch (e:  Throwable) {
                 Log.e(TAG, "Error stopping stream: ${e.message}")
@@ -310,7 +310,7 @@ class AudioStreaming(
 
     fun muteStreaming(result: MethodChannel.Result) {
         try {
-            rtspAudio.disableAudio()
+            rtmpAudio.disableAudio()
             result.success(null)
         } catch (e: IllegalStateException) {
             result.error("MuteAudioStreamingFailed", e.message, null)
@@ -319,7 +319,7 @@ class AudioStreaming(
 
     fun unMuteStreaming(result: MethodChannel.Result) {
         try {
-            rtspAudio.enableAudio()
+            rtmpAudio.enableAudio()
             result.success(null)
         } catch (e: IllegalStateException) {
             result.error("UnMuteAudioStreamingFailed", e.message, null)
@@ -424,7 +424,7 @@ class AudioStreaming(
 
         // 1. Release Mic/Resources Immediately
         try {
-            rtspAudio.stopStream()
+            rtmpAudio.stopStream()
             Log.d(TAG, "Stream stopped for interruption")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping stream: ${e.message}")
@@ -510,7 +510,7 @@ class AudioStreaming(
                 }
 
                 // 1. Ensure clean slate
-                try { rtspAudio.stopStream() } catch (e: Exception) {}
+                try { rtmpAudio.stopStream() } catch (e: Exception) {}
 
                 // 2. Force Audio Prepare (Re-initializes buffers/encoders)
                 val prepared = prepareInternal()
@@ -552,9 +552,9 @@ class AudioStreaming(
                     return@Thread
                 }
 
-                // 4. Start RTSP Stream
-                Log.i(TAG, "🚀 Restarting RTSP stream to $url")
-                rtspAudio.startStream(url)
+                // 4. Start RTMP Stream
+                Log.i(TAG, "🚀 Restarting RTMP stream to $url")
+                rtmpAudio.startStream(url)
 
                 // Success/Failure will be handled in callbacks
             } catch (e: Exception) {
@@ -577,14 +577,14 @@ class AudioStreaming(
         }
     }
 
-    // --- ConnectCheckerRtsp Callbacks ---
+    // --- ConnectCheckerRtmp Callbacks ---
     
-    override fun onConnectionStartedRtsp(rtspUrl: String) {
-        Log.i(TAG, "RTSP Connection Started: $rtspUrl")
+    override fun onConnectionStartedRtmp(rtmpUrl: String) {
+        Log.i(TAG, "RTMP Connection Started: $rtmpUrl")
     }
 
-    override fun onConnectionSuccessRtsp() {
-        Log.i(TAG, "✅ RTSP Connection Successful")
+    override fun onConnectionSuccessRtmp() {
+        Log.i(TAG, "✅ RTMP Connection Successful")
 
         val wasReconnecting = (currentState == StreamState.RECONNECTING || currentState == StreamState.INTERRUPTED)
         
@@ -595,8 +595,8 @@ class AudioStreaming(
         }
     }
 
-    override fun onConnectionFailedRtsp(reason: String) {
-        Log.e(TAG, "❌ RTSP Connection Failed: $reason")
+    override fun onConnectionFailedRtmp(reason: String) {
+        Log.e(TAG, "❌ RTMP Connection Failed: $reason")
 
         // If already interrupted, we are already handled
         if (currentState == StreamState.INTERRUPTED) {
@@ -606,17 +606,17 @@ class AudioStreaming(
 
         // Check if this looks like a network issue
         if (isNetworkRelatedError(reason) && (currentState == StreamState.STREAMING || currentState == StreamState.RECONNECTING)) {
-            Log.i(TAG, "RTSP failure appears network-related, triggering network interruption flow")
+            Log.i(TAG, "RTMP failure appears network-related, triggering network interruption flow")
             handleNetworkLost() // This handles flags and state transition
             return
         }
 
         // Non-network errors or if not streaming: use existing retry logic
         runOnMainThreadSafely {
-             if (rtspAudio.reTry(5000, reason)) {
+             if (rtmpAudio.reTry(5000, reason)) {
                  dartMessenger?.send(DartMessenger.EventType.RTMP_RETRY, reason)
              } else {
-                 handleReconnectionFailure("RTSP connection failed after retries: $reason")
+                 handleReconnectionFailure("RTMP connection failed after retries: $reason")
              }
         }
     }
@@ -632,8 +632,8 @@ class AudioStreaming(
         return networkKeywords.any { lowerReason.contains(it) }
     }
 
-    override fun onDisconnectRtsp() {
-        Log.d(TAG, "RTSP Disconnected callback")
+    override fun onDisconnectRtmp() {
+        Log.d(TAG, "RTMP Disconnected callback")
         
         if (currentState == StreamState.INTERRUPTED || currentState == StreamState.RECONNECTING) {
              Log.d(TAG, "Ignored explicit disconnect callback during interruption/reconnection flow")
@@ -647,18 +647,18 @@ class AudioStreaming(
         }
     }
 
-    override fun onAuthErrorRtsp() {
+    override fun onAuthErrorRtmp() {
         Log.e(TAG, "Auth Error")
         runOnMainThreadSafely {
             dartMessenger?.send(DartMessenger.EventType.ERROR, "Auth error")
         }
     }
 
-    override fun onAuthSuccessRtsp() {
+    override fun onAuthSuccessRtmp() {
         Log.d(TAG, "Auth Success")
     }
 
-    override fun onNewBitrateRtsp(bitrate: Long) {
+    override fun onNewBitrateRtmp(bitrate: Long) {
         // Log.v(TAG, "Bitrate: $bitrate")
     }
 

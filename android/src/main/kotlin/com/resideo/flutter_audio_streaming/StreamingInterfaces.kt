@@ -1,7 +1,7 @@
 package com.resideo.flutter_audio_streaming
 
 /**
- * Interface for the RTMP/RTSP client to enable mocking.
+ * Interface for the RTMP client implementation to enable mocking and protocol abstraction.
  */
 interface StreamingClient {
     val isStreaming: Boolean

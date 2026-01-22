@@ -44,10 +44,10 @@ class AudioStreamingTest {
         `when`(mockAudioFocus.requestFocus()).thenReturn(true)
         `when`(mockClient.prepareAudio(anyInt(), anyInt(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(true)
         
-        audioStreaming.startStreaming("rtsp://test", null)
+        audioStreaming.startStreaming("rtmp://test", null)
         
         // Verify it started
-        verify(mockClient).startStream("rtsp://test")
+        verify(mockClient).startStream("rtmp://test")
         
         // 2. Trigger Interruption
         audioStreaming.onPhoneInterruptionBegan()
