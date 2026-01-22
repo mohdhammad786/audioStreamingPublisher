@@ -497,19 +497,23 @@ class AudioStreaming(
             Log.w(TAG, "reconnectStream called but state is not INTERRUPTED (State: $currentState)")
             return
         }
-        transitionTo(StreamEvent.ReconnectionStarted)
+        
+        Log.i(TAG, "Scheduling reconnection (500ms delay for Mic release)...")
 
-        // Perform "Fresh" Connection on background thread
-        Thread {
+        // CRITICAL FIX: Run reconnection on Main Thread with delay
+        // 1. Avoid background thread crashes (AudioRecord/RTMP client thread affinity)
+        // 2. Give Camera app time to release the Microphone
+        mainHandler.postDelayed({
+            // Re-check state after delay
+            if (isPhoneCallActive || isNetworkLost || currentState != StreamState.INTERRUPTED) {
+                Log.w(TAG, "Reconnection aborted - state changed during delay")
+                return@postDelayed
+            }
+
+            transitionTo(StreamEvent.ReconnectionStarted)
+
             try {
-                Log.d(TAG, "Starting reconnection sequence...")
-
-                // Continuous Check: Did an interruption happen while starting thread?
-                if (isPhoneCallActive || isNetworkLost || currentState != StreamState.RECONNECTING) {
-                    Log.w(TAG, "Reconnection aborted - interrupted")
-                    if (currentState == StreamState.RECONNECTING) transitionTo(StreamEvent.InterruptionBegan)
-                    return@Thread
-                }
+                Log.d(TAG, "Starting reconnection sequence on Main Thread...")
 
                 // 1. Ensure clean slate
                 try { rtmpAudio.stopStream() } catch (e: Exception) {}
@@ -518,52 +522,26 @@ class AudioStreaming(
                 val prepared = prepareInternal()
                 if (!prepared) {
                      Log.e(TAG, "Failed to re-prepare audio components")
-                     runOnMainThreadSafely { handleReconnectionFailure("Device prepare failed") }
-                     return@Thread
+                     handleReconnectionFailure("Device prepare failed")
+                     return@postDelayed
                 }
                 
-                // RACE GUARD
-                if (isPhoneCallActive || isNetworkLost || currentState != StreamState.RECONNECTING) {
-                    Log.w(TAG, "Reconnection aborted after prepare")
-                    if (currentState == StreamState.RECONNECTING) transitionTo(StreamEvent.InterruptionBegan)
-                    return@Thread
-                }
-
-                // 3. Acquire Focus on Main Thread
-                var focusGranted = false
-                val latch = java.util.concurrent.CountDownLatch(1)
-                runOnMainThreadSafely {
-                    if (isActivityValid) {
-                        focusGranted = audioFocusManager.requestFocus()
-                    }
-                    latch.countDown()
-                }
-                latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
-
-                if (!focusGranted) {
+                // 3. Acquire Focus
+                if (!audioFocusManager.requestFocus()) {
                     Log.e(TAG, "Failed to acquire audio focus for reconnection")
-                    runOnMainThreadSafely { handleReconnectionFailure("Could not regain audio focus") }
-                    return@Thread
-                }
-
-                // FINAL RACE GUARD
-                if (isPhoneCallActive || isNetworkLost || currentState != StreamState.RECONNECTING) {
-                    Log.w(TAG, "Reconnection aborted before actual startStream")
-                    audioFocusManager.abandonFocus()
-                    if (currentState == StreamState.RECONNECTING) transitionTo(StreamEvent.InterruptionBegan)
-                    return@Thread
+                    handleReconnectionFailure("Could not regain audio focus")
+                    return@postDelayed
                 }
 
                 // 4. Start RTMP Stream
                 Log.i(TAG, "🚀 Restarting RTMP stream to $url")
                 rtmpAudio.startStream(url)
 
-                // Success/Failure will be handled in callbacks
             } catch (e: Exception) {
                 Log.e(TAG, "Reconnection exception: ${e.message}")
-                runOnMainThreadSafely { handleReconnectionFailure(e.message ?: "Unknown error") }
+                handleReconnectionFailure(e.message ?: "Unknown error")
             }
-        }.start()
+        }, 500)
     }
 
     private fun handleReconnectionFailure(reason: String) {
