@@ -541,7 +541,7 @@ class AudioStreaming(
                 Log.e(TAG, "Reconnection exception: ${e.message}")
                 handleReconnectionFailure(e.message ?: "Unknown error")
             }
-        }, 500)
+        }, 1000)
     }
 
     private fun handleReconnectionFailure(reason: String) {
@@ -655,7 +655,18 @@ class AudioStreaming(
             if (currentState == StreamState.INTERRUPTED && currentInterruptionSource == InterruptionSource.PHONE_CALL) {
                  if (!phoneCallManager.isCallActive) {
                      Log.i(TAG, "Resumed while interrupted by AudioFocus/Camera - attempting resume")
-                     handlePhoneInterruptionEnded()
+                     
+                     // Ensure flag is cleared since we know call is inactive
+                     isPhoneCallActive = false
+                     
+                     // Check network status before resuming
+                     if (isNetworkLost) {
+                         Log.w(TAG, "Phone ended but network still lost - staying interrupted as NETWORK")
+                         currentInterruptionSource = InterruptionSource.NETWORK
+                         startInterruptionTimeout()
+                     } else {
+                         handleInterruptionEndedInternal()
+                     }
                      return
                  }
             }
