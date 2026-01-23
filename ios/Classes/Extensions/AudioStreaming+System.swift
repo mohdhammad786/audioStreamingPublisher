@@ -17,7 +17,12 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
     public func applicationDidBecomeActive() {
         print("📱 Application Did Become Active")
         
-        guard stateMachine.currentState == .interrupted else { return }
+        // Fix: Do NOT auto-resume if we were stopped/failed
+        // Only resume if we were in an INTERRUPTED state
+        guard stateMachine.currentState == .interrupted else {
+             print("📱 Active but not in INTERRUPTED state (current: \(stateMachine.currentState.description)) - Ignoring auto-resume")
+             return
+        }
         
         stateLock.lock()
         let currentSource = interruptionManager.currentSource

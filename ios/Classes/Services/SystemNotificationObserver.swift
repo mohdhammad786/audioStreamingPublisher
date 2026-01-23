@@ -53,18 +53,23 @@ class SystemNotificationObserver: SystemNotificationObserverProtocol {
         case .began:
             delegate?.audioInterruptionBegan()
         case .ended:
+            // CRITICAL FIX: The Camera app triggers an "Ended" interruption when it closes.
+            // However, iOS often sets 'shouldResume' to false or sends no options when returning from Camera.
+            // We must be careful NOT to resume if the user manually stopped the stream or if we are in a FAILED state.
+            // The logic is now delegated entirely to the AudioStreaming class's state machine via 'audioInterruptionEnded'.
+            // We just pass the raw signal.
+            
             var shouldResume = false
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) {
                     shouldResume = true
-                } else {
-                     // Fallback check
-                     if UIApplication.shared.applicationState == .active {
-                         shouldResume = true
-                     }
                 }
             }
+            
+            // Note: We REMOVED the "applicationState == .active" fallback here because it causes
+            // false positives when returning from Camera. We let the Delegate decide based on State.
+            
             delegate?.audioInterruptionEnded(shouldResume: shouldResume)
         @unknown default:
             break
