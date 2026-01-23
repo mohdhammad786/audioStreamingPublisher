@@ -51,8 +51,19 @@ class AudioSessionManager: AudioSessionManagerProtocol {
             let session = AVAudioSession.sharedInstance()
 
             do {
+                // Ensure category is correct before activation (critical after Camera/other apps)
+                if #available(iOS 10.0, *) {
+                    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+                } else {
+                    session.perform(NSSelectorFromString("setCategory:withOptions:error:"), with: AVAudioSession.Category.playAndRecord, with: [
+                        AVAudioSession.CategoryOptions.allowBluetooth,
+                        AVAudioSession.CategoryOptions.defaultToSpeaker]
+                    )
+                    try session.setMode(.default)
+                }
+                
                 try session.setActive(true)
-                print("✅ AudioSessionManager: Session activated successfully (attempt \(attempt + 1))")
+                print("✅ AudioSessionManager: Session configured and activated successfully (attempt \(attempt + 1))")
                 DispatchQueue.main.async { completion(true) }
             } catch {
                 if attempt < maxAttempts {

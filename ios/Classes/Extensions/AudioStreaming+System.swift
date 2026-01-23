@@ -24,22 +24,33 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
              return
         }
         
-        stateLock.lock()
-        let currentSource = interruptionManager.currentSource
-        stateLock.unlock()
-        
-        if currentSource == .phoneCall {
-            print("📱 Active while interrupted by PhoneCall - forcing resume check")
-            if phoneMonitor.isPhoneCallActive {
-                print("📱 Actual phone call still active - ignoring")
+        // Add safety delay to allow previous app (e.g. Camera) to fully release audio session resources
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self = self else { return }
+            
+            // Re-check state after delay
+            guard self.stateMachine.currentState == .interrupted else {
+                print("📱 State changed during safety delay (current: \(self.stateMachine.currentState.description)) - aborting resume")
                 return
             }
-            handlePhoneInterruptionEnded()
-        } else if currentSource == .network {
-            print("📱 Active while interrupted by Network - forcing resume check")
-             if networkMonitor.isNetworkAvailable {
-                 handleNetworkAvailable()
-             }
+
+            self.stateLock.lock()
+            let currentSource = self.interruptionManager.currentSource
+            self.stateLock.unlock()
+            
+            if currentSource == .phoneCall {
+                print("📱 Active while interrupted by PhoneCall - forcing resume check")
+                if self.phoneMonitor.isPhoneCallActive {
+                    print("📱 Actual phone call still active - ignoring")
+                    return
+                }
+                self.handlePhoneInterruptionEnded()
+            } else if currentSource == .network {
+                print("📱 Active while interrupted by Network - forcing resume check")
+                 if self.networkMonitor.isNetworkAvailable {
+                     self.handleNetworkAvailable()
+                 }
+            }
         }
     }
 }
