@@ -9,10 +9,9 @@ import 'channel.dart';
 part 'streaming_value.dart';
 
 class StreamingController extends ValueNotifier<AudioValue> {
-  //ERROR, RTMP_STOPPED, RTMP_RETRY, AUDIO_INTERRUPTED, AUDIO_RESUMED, NETWORK_INTERRUPTED, NETWORK_RESUMED
+  //ERROR, RTMP_STOPPED, AUDIO_INTERRUPTED, AUDIO_RESUMED, NETWORK_INTERRUPTED, NETWORK_RESUMED
   static const String ERROR = "error";
   static const String RTMP_STOPPED = "rtmp_stopped";
-  static const String RTMP_RETRY = "rtmp_retry";
   static const String AUDIO_INTERRUPTED = "audio_interrupted";
   static const String AUDIO_RESUMED = "audio_resumed";
   static const String NETWORK_INTERRUPTED = "network_interrupted";
@@ -67,14 +66,14 @@ class StreamingController extends ValueNotifier<AudioValue> {
     if (_isDisposed || event == null) {
       return;
     }
-    // Android: Event {eventType: rtmp_retry, errorDescription: BadName received}
-    // iOS: Event {event: rtmp_retry, errorDescription: connection failed rtmpStatus}
     final String eventType =
         map['eventType'] as String? ?? map['event'] as String;
     final String errorDescription = map['errorDescription'];
+    final int? remainingSeconds = map['remainingSeconds'] as int?;
     final Map<String, dynamic> uniEvent = <String, dynamic>{
       'eventType': eventType,
-      'errorDescription': errorDescription
+      'errorDescription': errorDescription,
+      'remainingSeconds': remainingSeconds
     };
     switch (eventType) {
       case 'error':
@@ -82,9 +81,6 @@ class StreamingController extends ValueNotifier<AudioValue> {
             value.copyWith(errorDescription: errorDescription, event: uniEvent);
         break;
       case 'rtmp_connected':
-        value = value.copyWith(event: uniEvent);
-        break;
-      case 'rtmp_retry':
         value = value.copyWith(event: uniEvent);
         break;
       case 'rtmp_stopped':

@@ -45,8 +45,6 @@ class RecordingController extends ValueNotifier<RecordingValue> {
     if (_isDisposed || event == null) {
       return;
     }
-    // Android: Event {eventType: rtmp_retry, errorDescription: BadName received}
-    // iOS: Event {event: rtmp_retry, errorDescription: connection failed rtmpStatus}
     final String eventType =
         map['eventType'] as String? ?? map['event'] as String? ?? '';
     final String errorDescription = map['errorDescription'];

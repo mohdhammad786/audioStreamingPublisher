@@ -1,11 +1,11 @@
 package com.resideo.flutter_audio_streaming
 
 import android.content.Context
-import org.junit.Before
-import org.junit.Test
-import org.mockito.Mock
-import org.mockito.Mockito.*
-import org.mockito.MockitoAnnotations
+import com.resideo.flutter_audio_streaming.core.AudioStreaming
+import com.resideo.flutter_audio_streaming.interfaces.*
+import com.resideo.flutter_audio_streaming.models.*
+import com.resideo.flutter_audio_streaming.services.*
+import com.resideo.flutter_audio_streaming.utils.DartMessenger
 
 /**
  * Example Unit Test for AudioStreaming.
@@ -19,56 +19,75 @@ class AudioStreamingTest {
     @Mock lateinit var mockNetworkMonitor: NetworkMonitorInterface
     @Mock lateinit var mockAudioFocus: AudioFocusMonitorInterface
     @Mock lateinit var mockDartMessenger: DartMessenger
+    
+    // New Mocks
+    @Mock lateinit var mockInterruptionManager: InterruptionManager
+    @Mock lateinit var mockSystemLifecycleObserver: SystemLifecycleObserver
+    @Mock lateinit var mockRtmpConnectionHandler: RtmpConnectionHandler
+    @Mock lateinit var mockFlutterEventMapper: FlutterEventMapper
+    @Mock lateinit var mockStateMachine: StreamStateMachine
+    @Mock lateinit var mockReconnectionService: ReconnectionService
 
     private lateinit var audioStreaming: AudioStreaming
+    private lateinit var streamingContext: StreamingContext
 
     @Before
     fun setup() {
         MockitoAnnotations.openMocks(this)
         `when`(mockContext.applicationContext).thenReturn(mockContext)
         
+        streamingContext = StreamingContext()
+        
         audioStreaming = AudioStreaming(
             mockContext,
+            streamingContext,
             mockDartMessenger,
+            mockInterruptionManager,
+            mockSystemLifecycleObserver,
+            mockRtmpConnectionHandler,
             mockClient,
+            mockAudioFocus,
             mockPhoneMonitor,
             mockNetworkMonitor,
-            mockAudioFocus
+            mockFlutterEventMapper,
+            mockStateMachine,
+            mockReconnectionService
         )
     }
 
     @Test
-    fun `test phone call interruption stops stream`() {
-        // 1. Setup - Mocking startStreaming
+    fun `test startStreaming initializes components correctly`() {
+        // 1. Setup
         `when`(mockPhoneMonitor.isCallActive).thenReturn(false)
         `when`(mockAudioFocus.requestFocus()).thenReturn(true)
         `when`(mockClient.prepareAudio(anyInt(), anyInt(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(true)
-        
+        `when`(mockClient.isStreaming).thenReturn(false)
+
         audioStreaming.startStreaming("rtmp://test", null)
-        
-        // Verify it started
+
+        // 2. Verify
         verify(mockClient).startStream("rtmp://test")
-        
-        // 2. Trigger Interruption
-        audioStreaming.onPhoneInterruptionBegan()
-        
-        // 3. Verify side effects
-        verify(mockClient).stopStream()
-        verify(mockAudioFocus).abandonFocus()
-        verify(mockDartMessenger).send(eq(DartMessenger.EventType.AUDIO_INTERRUPTED), anyString())
+        verify(mockStateMachine).transition(StreamEvent.StartRequested)
+        verify(mockInterruptionManager).reset()
+        verify(mockPhoneMonitor).startMonitoring()
+        verify(mockNetworkMonitor).startMonitoring()
     }
 
     @Test
-    fun `test network loss while on phone call priorities phone`() {
-        // 1. Trigger Phone Call
+    fun `test stopStreamForInterruption stops rtmp client`() {
+        audioStreaming.stopStreamForInterruption()
+        verify(mockClient).stopStream()
+    }
+
+    @Test
+    fun `test onPhoneInterruptionBegan delegates to manager`() {
         audioStreaming.onPhoneInterruptionBegan()
-        
-        // 2. Trigger Network Loss
+        verify(mockInterruptionManager).handlePhoneInterruptionBegan()
+    }
+
+    @Test
+    fun `test onNetworkLost delegates to manager`() {
         audioStreaming.onNetworkLost()
-        
-        // 3. Verify sequence - should still be in phone interruption logic
-        // This test would check internal state if we exposed it, or verify no multiple events
-        verify(mockDartMessenger, times(1)).send(eq(DartMessenger.EventType.AUDIO_INTERRUPTED), anyString())
-        verify(mockDartMessenger, never()).send(eq(DartMessenger.EventType.NETWORK_INTERRUPTED), anyString())
+        verify(mockInterruptionManager).handleNetworkLost()
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import HaishinKit
 import AVFoundation
+import Flutter
 
 // MARK: - Mock State Observer
 class MockStreamStateObserver: StreamStateObserver {
@@ -101,8 +102,106 @@ class MockRTMPStream: RTMPStream {
         publishCalled = true
         lastPublishedName = name
     }
+}
+
+// MARK: - Mock Rtmp Service
+class MockRtmpService: RtmpServiceProtocol {
+    var delegate: RtmpServiceDelegate?
     
-    override func attachAudio(_ device: AVCaptureDevice?, automaticallyConfiguresApplicationAudioSession: Bool = true, onError: ((Error) -> Void)? = nil) {
-        attachAudioCalled = true
+    var connectCalled = false
+    var closeCalled = false
+    var publishCalled = false
+    var lastUrl: String?
+    
+    func connect(url: String) {
+        connectCalled = true
+        lastUrl = url
+    }
+    
+    func publish(_ name: String) {
+        publishCalled = true
+    }
+    
+    func close() {
+        closeCalled = true
+    }
+    
+    func mute() {}
+    func unmute() {}
+    func updateSettings(bitrate: Int?, sampleRate: Int?, isStereo: Bool?) {}
+    
+    func attachAudio(completion: @escaping (Bool, Error?) -> Void) {
+        completion(true, nil)
+    }
+    
+    func detachAudio(completion: (() -> Void)?) {
+        completion?()
+    }
+    
+    func simulateStatus(code: String, description: String = "") {
+        delegate?.rtmpStatusReceived(code: code, description: description)
+    }
+    
+    func simulateError(code: String, description: String = "") {
+        delegate?.rtmpErrorReceived(code: code, description: description)
+    }
+}
+
+// MARK: - Mock Audio Session Manager
+class MockAudioSessionManager: AudioSessionManagerProtocol {
+    var configureCalled = false
+    var deactivateCalled = false
+    
+    func configureAudioSession(completion: @escaping (Bool, Error?) -> Void) {
+        configureCalled = true
+        completion(true, nil)
+    }
+    
+    func deactivateAudioSession() {
+        deactivateCalled = true
+    }
+    
+    func activateAudioSessionWithRetry(attempt: Int, maxAttempts: Int, completion: @escaping (Bool) -> Void) {
+        completion(true)
+    }
+}
+
+// MARK: - Mock Stream Event Emitter
+class MockStreamEventEmitter: StreamEventEmitterProtocol {
+    var lastEvent: String?
+    var lastMessage: String?
+    
+    func setEventSink(_ sink: @escaping FlutterEventSink) {}
+    
+    func sendEvent(event: String, message: String, details: [String : Any]?) {
+        lastEvent = event
+        lastMessage = message
+    }
+}
+
+// MARK: - Mock System Notification Observer
+class MockSystemNotificationObserver: SystemNotificationObserverProtocol {
+    var delegate: SystemNotificationObserverDelegate?
+    var isObserving = false
+    
+    func startObserving() {
+        isObserving = true
+    }
+    
+    func stopObserving() {
+        isObserving = false
+    }
+    
+    // Test helpers
+    func simulateInterruptionBegan() {
+        delegate?.audioInterruptionBegan()
+    }
+    
+    func simulateInterruptionEnded(shouldResume: Bool) {
+        delegate?.audioInterruptionEnded(shouldResume: shouldResume)
+    }
+    
+    func simulateAppDidBecomeActive() {
+        delegate?.applicationDidBecomeActive()
     }
 }
