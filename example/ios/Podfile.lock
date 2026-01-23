@@ -33,8 +33,8 @@ SPEC CHECKSUMS:
   flutter_audio_streaming: 9ba9c6fcfae064cbbb6d87e13d6dcf4891a273fa
   HaishinKit: 5cf385a823dee6b299404877edf418974422bf9f
   Logboard: 0ab6bbd984ed032b3f0b615cef06779a73445c80
-  path_provider_foundation: 2a68637f8a62df7f6e790a428d1bdf72cb4e2d59
+  path_provider_foundation: bb55f6dbba17d0dccd6737fe6f7f34fbd0376880
 
-PODFILE CHECKSUM: 7368163408c647b7eb699d0d788ba6718e18fb8d
+PODFILE CHECKSUM: cc1f88378b4bfcf93a6ce00d2c587857c6008d3b
 
 COCOAPODS: 1.16.2

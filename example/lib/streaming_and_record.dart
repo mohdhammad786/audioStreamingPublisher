@@ -89,11 +89,6 @@ class _StreamingAndRecordExampleState extends State<StreamingAndRecordExample>
               break;
             case StreamingController.RTMP_STOPPED:
               break;
-            case StreamingController.RTMP_RETRY:
-              if (isVisible && isStreaming) {
-                await stopStreaming();
-              }
-              break;
           }
         } catch (e) {
           print('initialize streaming: $e');
@@ -118,11 +113,6 @@ class _StreamingAndRecordExampleState extends State<StreamingAndRecordExample>
             case StreamingController.ERROR:
               break;
             case StreamingController.RTMP_STOPPED:
-              break;
-            case StreamingController.RTMP_RETRY:
-              if (isVisible && isStreaming) {
-                await stopStreaming();
-              }
               break;
           }
         } catch (e) {
