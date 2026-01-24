@@ -12,6 +12,7 @@ protocol RtmpServiceProtocol: AnyObject {
     func connect(url: String)
     func publish(_ name: String)
     func close()
+    func shutdownForInterruption()
     func mute()
     func unmute()
     func updateSettings(bitrate: Int?, sampleRate: Int?, isStereo: Bool?)
@@ -45,11 +46,7 @@ class RtmpService: RtmpServiceProtocol {
     }
     
     private func initializeHaishinKit() {
-        removeListeners()
-        rtmpStream?.delegate = nil
-        rtmpStream = nil
-        rtmpConnection = nil
-        isAudioAttached = false
+        shutdownForInterruptionInternal()
 
         let connection = RTMPConnection()
         rtmpConnection = connection
@@ -92,6 +89,13 @@ class RtmpService: RtmpServiceProtocol {
     func close() {
         operationQueue.async { [weak self] in
             self?.rtmpConnection?.close()
+        }
+    }
+
+    func shutdownForInterruption() {
+        operationQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.shutdownForInterruptionInternal()
         }
     }
     
@@ -156,6 +160,18 @@ class RtmpService: RtmpServiceProtocol {
             self.initializeHaishinKit()
             
             self.updateSettings(bitrate: self.bitrate, sampleRate: Int(self.sampleRate), isStereo: self.isStereo)
+        }
+    }
+
+    private func shutdownForInterruptionInternal() {
+        autoreleasepool {
+            removeListeners()
+            rtmpStream?.attachAudio(nil)
+            isAudioAttached = false
+            rtmpStream?.delegate = nil
+            rtmpConnection?.close()
+            rtmpStream = nil
+            rtmpConnection = nil
         }
     }
     

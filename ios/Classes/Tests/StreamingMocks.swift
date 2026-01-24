@@ -119,6 +119,7 @@ class MockRtmpService: RtmpServiceProtocol {
     
     var connectCalled = false
     var closeCalled = false
+    var shutdownForInterruptionCalled = false
     var publishCalled = false
     var forceReleaseCalled = false
     var reinitializeCalled = false
@@ -135,6 +136,10 @@ class MockRtmpService: RtmpServiceProtocol {
     
     func close() {
         closeCalled = true
+    }
+
+    func shutdownForInterruption() {
+        shutdownForInterruptionCalled = true
     }
     
     func mute() {}

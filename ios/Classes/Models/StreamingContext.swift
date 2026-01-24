@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct StreamingContext {
     private static let defaults = UserDefaults.standard
@@ -117,14 +118,24 @@ struct DiagnosticsStore {
     private static let keyLastGracefulEndAt = "com.resideo.flutter_audio_streaming.diagnostics.lastGracefulEndAt"
     private static let keyLastKnownState = "com.resideo.flutter_audio_streaming.diagnostics.lastKnownState"
     private static let keyLogLines = "com.resideo.flutter_audio_streaming.diagnostics.logLines"
+    private static let keyLastCrashAt = "com.resideo.flutter_audio_streaming.diagnostics.lastCrashAt"
+    private static let keyLastCrashType = "com.resideo.flutter_audio_streaming.diagnostics.lastCrashType"
+    private static let keyLastCrashReason = "com.resideo.flutter_audio_streaming.diagnostics.lastCrashReason"
+    private static let keyLastCrashCallStack = "com.resideo.flutter_audio_streaming.diagnostics.lastCrashCallStack"
 
     static func beginSession() -> [String: Any] {
+        DiagnosticsCrashHandler.installIfNeeded()
+
         let now = Date().timeIntervalSince1970
         let prevSessionId = defaults.string(forKey: keySessionId)
         let prevStartedAt = defaults.double(forKey: keySessionStartedAt)
         let prevHeartbeatAt = defaults.double(forKey: keyLastHeartbeatAt)
         let prevGracefulEndAt = defaults.double(forKey: keyLastGracefulEndAt)
         let prevState = defaults.string(forKey: keyLastKnownState)
+        let prevCrashAt = defaults.double(forKey: keyLastCrashAt)
+        let prevCrashType = defaults.string(forKey: keyLastCrashType)
+        let prevCrashReason = defaults.string(forKey: keyLastCrashReason)
+        let prevCrashCallStack = defaults.array(forKey: keyLastCrashCallStack) as? [String]
 
         let hadPreviousSession = (prevSessionId != nil && prevStartedAt > 0)
         let previousEndedGracefully = (prevGracefulEndAt > 0 && prevGracefulEndAt >= prevHeartbeatAt)
@@ -135,6 +146,10 @@ struct DiagnosticsStore {
         defaults.set(now, forKey: keySessionStartedAt)
         defaults.set(now, forKey: keyLastHeartbeatAt)
         defaults.removeObject(forKey: keyLastGracefulEndAt)
+        defaults.removeObject(forKey: keyLastCrashAt)
+        defaults.removeObject(forKey: keyLastCrashType)
+        defaults.removeObject(forKey: keyLastCrashReason)
+        defaults.removeObject(forKey: keyLastCrashCallStack)
 
         let info: [String: Any] = [
             "previousSessionId": prevSessionId as Any,
@@ -142,6 +157,10 @@ struct DiagnosticsStore {
             "previousLastHeartbeatAt": prevHeartbeatAt,
             "previousLastGracefulEndAt": prevGracefulEndAt,
             "previousLastKnownState": prevState as Any,
+            "previousCrashAt": prevCrashAt > 0 ? prevCrashAt : NSNull(),
+            "previousCrashType": prevCrashType as Any,
+            "previousCrashReason": prevCrashReason as Any,
+            "previousCrashCallStack": prevCrashCallStack as Any,
             "previousLikelyUnexpectedTermination": previousLikelyUnexpected,
             "currentSessionId": newSessionId,
             "currentSessionStartedAt": now
@@ -182,4 +201,48 @@ struct DiagnosticsStore {
     static func readLines() -> [String] {
         return (defaults.array(forKey: keyLogLines) as? [String]) ?? []
     }
+
+    fileprivate static func recordCrash(type: String, reason: String?, callStack: [String]?) {
+        let now = Date().timeIntervalSince1970
+        defaults.set(now, forKey: keyLastCrashAt)
+        defaults.set(type, forKey: keyLastCrashType)
+        defaults.set(reason, forKey: keyLastCrashReason)
+        if let callStack = callStack {
+            defaults.set(callStack, forKey: keyLastCrashCallStack)
+        } else {
+            defaults.removeObject(forKey: keyLastCrashCallStack)
+        }
+        defaults.set(now, forKey: keyLastHeartbeatAt)
+    }
+}
+
+private enum DiagnosticsCrashHandler {
+    private static var installed = false
+
+    static func installIfNeeded() {
+        guard !installed else { return }
+        installed = true
+
+        NSSetUncaughtExceptionHandler(DiagnosticsHandleUncaughtException(_:))
+
+        signal(SIGABRT, DiagnosticsHandleSignal(_:))
+        signal(SIGILL, DiagnosticsHandleSignal(_:))
+        signal(SIGSEGV, DiagnosticsHandleSignal(_:))
+        signal(SIGFPE, DiagnosticsHandleSignal(_:))
+        signal(SIGBUS, DiagnosticsHandleSignal(_:))
+        signal(SIGPIPE, DiagnosticsHandleSignal(_:))
+    }
+}
+
+private func DiagnosticsHandleUncaughtException(_ exception: NSException) {
+    DiagnosticsStore.recordCrash(
+        type: "NSException:\(exception.name.rawValue)",
+        reason: exception.reason,
+        callStack: exception.callStackSymbols
+    )
+}
+
+private func DiagnosticsHandleSignal(_ signal: Int32) {
+    DiagnosticsStore.recordCrash(type: "Signal:\(signal)", reason: nil, callStack: Thread.callStackSymbols)
+    _exit(signal)
 }

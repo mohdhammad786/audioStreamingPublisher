@@ -22,14 +22,31 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
         print("☠️ Media Services Lost - Emergency Cleanup")
         DiagnosticsStore.append("mediaServicesWereLost streamState=\(stateMachine.currentState.rawValue)")
         
-        // CRITICAL FIX: Use forceRelease to abandon dead HaishinKit objects.
-        // This prevents the app from crashing by not touching invalid Core Audio pointers.
-        rtmpService.forceRelease()
-        
-        // Ensure we are in interrupted state so recovery can happen on Reset
-        if stateMachine.currentState == .streaming || stateMachine.currentState == .connecting || stateMachine.currentState == .reconnecting {
-             beginInterruption(source: .systemResource)
+        guard stateMachine.currentState == .streaming || stateMachine.currentState == .connecting || stateMachine.currentState == .reconnecting else {
+            rtmpService.forceRelease()
+            return
         }
+        
+        reconnectionManager.cancelReconnection()
+        
+        stateLock.lock()
+        streamingContext.saveCurrent(source: .systemResource)
+        streamingContext.requiresRtmpReinitialize = true
+        stateLock.unlock()
+        
+        guard stateMachine.transitionTo(.interrupted) else {
+            return
+        }
+        
+        StreamingContext.persistInterruptionBegan(source: .systemResource)
+        
+        rtmpService.forceRelease()
+        audioSessionManager.deactivateAudioSession()
+        
+        sendEvent(event: "audio_interrupted", message: "Stream interrupted by system resource (e.g. Camera)")
+        DiagnosticsStore.append("interruption event sent event=audio_interrupted (mediaServicesWereLost)")
+        
+        interruptionManager.handleInterruptionBegan(source: .systemResource)
     }
     
     public func mediaServicesWereReset() {

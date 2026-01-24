@@ -28,6 +28,7 @@ public class AudioStreaming {
     internal let stateLock = NSRecursiveLock()
     private let previousRunDiagnostics: [String: Any]
     private var didEmitDiagnostics = false
+    private var diagnosticsHeartbeatTimer: DispatchSourceTimer?
     
     // MARK: - Initialization
     
@@ -57,6 +58,7 @@ public class AudioStreaming {
         // Finish setup
         self.rtmpService.delegate = self
         setupDelegates()
+        startDiagnosticsHeartbeat()
     }
     
     // MARK: - Setup
@@ -206,6 +208,7 @@ public class AudioStreaming {
     public func dispose() {
         DiagnosticsStore.append("dispose called")
         DiagnosticsStore.markGracefulEnd()
+        stopDiagnosticsHeartbeat()
         StreamingContext.clearPersistedInterruption()
         interruptionManager.clearAllInterruptions()
         networkMonitor.stopMonitoring()
@@ -244,6 +247,24 @@ public class AudioStreaming {
             message: "diagnostics",
             details: details
         )
+    }
+
+    private func startDiagnosticsHeartbeat() {
+        guard diagnosticsHeartbeatTimer == nil else { return }
+
+        let queue = DispatchQueue(label: "com.resideo.flutter_audio_streaming.diagnostics.heartbeat")
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: .seconds(1))
+        timer.setEventHandler {
+            DiagnosticsStore.heartbeat()
+        }
+        diagnosticsHeartbeatTimer = timer
+        timer.resume()
+    }
+
+    private func stopDiagnosticsHeartbeat() {
+        diagnosticsHeartbeatTimer?.cancel()
+        diagnosticsHeartbeatTimer = nil
     }
     
     // MARK: - Internal Helpers
@@ -350,8 +371,8 @@ public class AudioStreaming {
             stateLock.lock()
             streamingContext.requiresRtmpReinitialize = true
             stateLock.unlock()
-            DiagnosticsStore.append("beginInterruption systemResource forceRelease only (skip detachAudio)")
-            rtmpService.forceRelease()
+            DiagnosticsStore.append("beginInterruption systemResource shutdownForInterruption")
+            rtmpService.shutdownForInterruption()
             audioSessionManager.deactivateAudioSession()
         } else {
             // Safe cleanup via service
