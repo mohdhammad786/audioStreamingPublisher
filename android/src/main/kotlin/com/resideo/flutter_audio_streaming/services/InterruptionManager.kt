@@ -24,10 +24,12 @@ class InterruptionManager(
     companion object {
         private const val TAG = "InterruptionManager"
         private const val NETWORK_INTERRUPTION_TIMEOUT_MS = 30000L
+        private const val SYSTEM_INTERRUPTION_TIMEOUT_MS = 30000L // 30s timeout for Camera/Phone
     }
 
-    @Volatile var isNetworkLost = false
-    @Volatile var isPhoneCallActive = false
+    // Professional Stack-based storage
+    private val interruptions = mutableListOf<Interruption>()
+    private val lock = Any()
     
     private var interruptionTimerStartedAt: Long = 0L
     private var interruptionDeadlineMs: Long = 0L
@@ -37,206 +39,239 @@ class InterruptionManager(
     // Phone Call Interruption Handlers
     fun handlePhoneInterruptionBegan() {
         Log.i(TAG, "📱 Phone Call Interruption Detected")
-        
-        if (isPhoneCallActive) return
-        isPhoneCallActive = true
-        
-        // If we are already interrupted by network, phone takes over UI priority
-        if (delegate.getStreamState() == StreamState.INTERRUPTED) {
-            Log.i(TAG, "Already interrupted (likely network) - updating source to phone")
-            context.currentInterruptionSource = InterruptionSource.PHONE_CALL
-            
-            // Send event immediately as requested for higher responsiveness
-            delegate.runOnMainThread {
-                val extras = mapOf("remainingSeconds" to getRemainingInterruptionSeconds())
-                dartMessenger?.send(DartMessenger.EventType.AUDIO_INTERRUPTED, "Phone call active", extras)
-            }
-            return
-        }
-
-        context.currentInterruptionSource = InterruptionSource.PHONE_CALL
-        handleInterruptionBeganInternal()
+        handleInterruptionBeganInternal(InterruptionSource.PHONE_CALL)
     }
 
     fun handlePhoneInterruptionEnded() {
         Log.i(TAG, "📱 Phone Call Interruption Ended")
-
-        if (!isPhoneCallActive) return
-        isPhoneCallActive = false
-
-        // Scenario 3: If network is still lost, stay interrupted but switch source
-        if (isNetworkLost) {
-            Log.w(TAG, "Phone ended but network still lost - staying interrupted as NETWORK")
-            context.currentInterruptionSource = InterruptionSource.NETWORK
-            // Do NOT restart timer here - preserve the existing deadline (time conservation)
-            
-            delegate.runOnMainThread {
-                dartMessenger?.send(DartMessenger.EventType.NETWORK_INTERRUPTED, "Phone call ended but network still lost")
-            }
-            return
-        }
-
-        handleInterruptionEndedInternal()
+        handleInterruptionEndedInternal(InterruptionSource.PHONE_CALL)
     }
 
     // Network Interruption Handlers
     fun handleNetworkLost() {
         Log.i(TAG, "🌐 Network Lost Detected")
-
-        if (isNetworkLost) return
-        isNetworkLost = true
-
-        // If phone call is active, network loss is recorded but phone keeps UI priority
-        if (isPhoneCallActive) {
-            Log.d(TAG, "Network lost during phone call - recorded but phone has priority")
-            return
-        }
-
-        // Otherwise, trigger interruption as NETWORK
-        context.currentInterruptionSource = InterruptionSource.NETWORK
-        handleInterruptionBeganInternal()
+        handleInterruptionBeganInternal(InterruptionSource.NETWORK)
     }
 
     fun handleNetworkAvailable() {
         Log.i(TAG, "🌐 Network Available")
-
-        if (!isNetworkLost) return
-        isNetworkLost = false
-
-        // If phone call is still active, we are still interrupted
-        if (isPhoneCallActive) {
-            Log.d(TAG, "Network restored but phone call still active - staying interrupted")
-            return
-        }
-
-        // Only proceed if we were actually interrupted by network
-        if (context.currentInterruptionSource == InterruptionSource.NETWORK) {
-            Log.i(TAG, "🌐 Ending network interruption - initiating stabilization")
-            
-            // CRITICAL FIX: Cancel timer IMMEDIATELY to prevent race conditions
-            cancelInterruptionTimeout()
-            
-            // CRITICAL FIX: Add stabilization delay (1000ms) for Android network stack
-            mainHandler.postDelayed({
-                // Re-verify flags after delay
-                if (isNetworkLost) {
-                    Log.w(TAG, "Network became lost again during stabilization - restarting timer")
-                    startInterruptionTimeout() // Restart timer
-                    return@postDelayed
-                }
-                
-                if (isPhoneCallActive || delegate.getStreamState() != StreamState.INTERRUPTED) {
-                    Log.w(TAG, "State changed during stabilization - aborting")
-                    return@postDelayed
-                }
-                
-                handleInterruptionEndedInternal()
-            }, 1000)
-        }
+        // Delay logic for network stability is now handled in end logic or can be kept here
+        // For consistency with iOS, we process the end immediately but we can keep the stabilization
+        // if strictly required. However, for stack logic, we just remove the network interruption.
+        
+        // Stabilization Logic (Optional but good for Android)
+        mainHandler.postDelayed({
+             handleInterruptionEndedInternal(InterruptionSource.NETWORK)
+        }, 1000)
+    }
+    
+    // System Resource Interruption Handlers
+    fun handleSystemInterruptionBegan() {
+        Log.i(TAG, "⚠️ System Resource Interruption Detected")
+        handleInterruptionBeganInternal(InterruptionSource.SYSTEM_RESOURCE)
+    }
+    
+    fun handleSystemInterruptionEnded() {
+        Log.i(TAG, "⚠️ System Resource Interruption Ended")
+        handleInterruptionEndedInternal(InterruptionSource.SYSTEM_RESOURCE)
     }
 
     // Common Interruption Handlers (Internal)
-    private fun handleInterruptionBeganInternal() {
-        Log.i(TAG, "handleInterruptionBeganInternal - Source: ${context.currentInterruptionSource}, State: ${delegate.getStreamState()}")
-
-        // If already interrupted, don't restart logic, just update timers if needed
-        if (delegate.getStreamState() == StreamState.INTERRUPTED) {
-            Log.d(TAG, "Already in INTERRUPTED state")
-            return
-        }
-
-        val shifted = delegate.transitionTo(StreamEvent.InterruptionBegan)
-        if (!shifted) return
-
-        // 1. Release Mic/Resources Immediately
-        delegate.stopStreamForInterruption()
-
-        // 2. Abandon audio focus
-        delegate.abandonAudioFocus()
-
-        // 3. Start Interruption Timeout (Scenario 2: 30s timer)
-        startInterruptionTimeout()
-    }
-
-    fun handleInterruptionEndedInternal() {
-        Log.i(TAG, "handleInterruptionEndedInternal - Source: ${context.currentInterruptionSource}, State: ${delegate.getStreamState()}")
-
-        if (delegate.getStreamState() != StreamState.INTERRUPTED) {
-            Log.d(TAG, "Ignoring end - not in INTERRUPTED state")
-            return
-        }
-
-        // Cancel timeout
-        cancelInterruptionTimeout()
-
-        // Attempt Reconnection
-        if (context.isInForeground) {
-            Log.i(TAG, "End of all interruptions - triggering reconnection")
-            delegate.reconnectStream()
-        } else {
-            Log.i(TAG, "End of interruptions but app in background - pending reconnect")
-            context.pendingReconnectOnResume = true
-        }
-    }
-
-    private fun startInterruptionTimeout() {
-        cancelInterruptionTimeout()
-        val now = System.currentTimeMillis()
-        if (interruptionTimerStartedAt == 0L || interruptionDeadlineMs == 0L) {
-            interruptionTimerStartedAt = now
-            interruptionDeadlineMs = now + NETWORK_INTERRUPTION_TIMEOUT_MS
-        }
-        val remainingMs = interruptionDeadlineMs - now
-        interruptionRunnable = Runnable {
-            Log.w(TAG, "Interruption timeout expired (source=${context.currentInterruptionSource}) - Aborting reconnection")
-            // Notify delegate to fail
-            delegate.runOnMainThread {
-                 dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Stream stopped due to prolonged interruption")
+    private fun handleInterruptionBeganInternal(source: InterruptionSource) {
+        synchronized(lock) {
+            val interruption = when (source) {
+                InterruptionSource.PHONE_CALL -> PhoneCallInterruption()
+                InterruptionSource.NETWORK -> NetworkInterruption()
+                InterruptionSource.SYSTEM_RESOURCE -> SystemResourceInterruption()
+                else -> return
             }
-            delegate.transitionTo(StreamEvent.ReconnectionFailed)
+
+            if (interruptions.none { it.source == source }) {
+                interruptions.add(interruption)
+                Log.i(TAG, "⏸️ Added $interruption - Stack: ${interruptions.map { it.source }}")
+            } else {
+                Log.d(TAG, "⏸️ $source already in stack - ignoring duplicate")
+            }
+
+            updateStateAndTimer()
         }
-        mainHandler.postDelayed(interruptionRunnable!!, remainingMs.coerceAtLeast(0L))
-        Log.d(TAG, "Interruption timer started: remaining=${remainingMs}ms (source=${context.currentInterruptionSource})")
     }
 
-    fun cancelInterruptionTimeout() {
-        interruptionRunnable?.let {
-            mainHandler.removeCallbacks(it)
+    private fun handleInterruptionEndedInternal(source: InterruptionSource) {
+        synchronized(lock) {
+            val removed = interruptions.removeIf { it.source == source }
+            if (removed) {
+                Log.i(TAG, "⏸️ Removed $source - Stack: ${interruptions.map { it.source }}")
+            } else {
+                Log.w(TAG, "⏸️ Attempted to remove $source but it was not in stack")
+            }
+
+            updateStateAndTimer()
+        }
+    }
+
+    private fun updateStateAndTimer() {
+        // 1. Determine Effective Source (Priority Logic)
+        val effectiveSource = when {
+            interruptions.any { it.source == InterruptionSource.PHONE_CALL } -> InterruptionSource.PHONE_CALL
+            interruptions.any { it.source == InterruptionSource.SYSTEM_RESOURCE } -> InterruptionSource.SYSTEM_RESOURCE
+            interruptions.any { it.source == InterruptionSource.NETWORK } -> InterruptionSource.NETWORK
+            else -> InterruptionSource.NONE
+        }
+        
+        Log.i(TAG, "🔄 UpdateState: Effective Source = $effectiveSource")
+        
+        // 2. Update Context
+        context.currentInterruptionSource = effectiveSource
+
+        // 3. Handle Transitions
+        if (effectiveSource != InterruptionSource.NONE) {
+            if (delegate.getStreamState() != StreamState.INTERRUPTED) {
+                val transitioned = delegate.transitionTo(StreamEvent.InterruptionBegan)
+                if (transitioned) {
+                    delegate.stopStreamForInterruption()
+                    delegate.abandonAudioFocus()
+                    // Send Event
+                    sendInterruptionEvent(effectiveSource)
+                }
+            }
+        } else {
+            // No interruptions -> Resume
+            if (delegate.getStreamState() == StreamState.INTERRUPTED) {
+                Log.i(TAG, "✅ All interruptions cleared - Resuming")
+                cancelInterruptionTimeout()
+                if (context.isInForeground) {
+                    delegate.reconnectStream()
+                } else {
+                    context.pendingReconnectOnResume = true
+                }
+            }
+        }
+
+        // 4. Timer Logic
+        updateTimer(effectiveSource)
+    }
+    
+    private fun sendInterruptionEvent(source: InterruptionSource) {
+        val eventType = when (source) {
+            InterruptionSource.PHONE_CALL -> DartMessenger.EventType.AUDIO_INTERRUPTED
+            InterruptionSource.SYSTEM_RESOURCE -> DartMessenger.EventType.AUDIO_INTERRUPTED
+            InterruptionSource.NETWORK -> DartMessenger.EventType.NETWORK_INTERRUPTED
+            else -> return
+        }
+        
+        val message = when (source) {
+            InterruptionSource.PHONE_CALL -> "Phone call active"
+            InterruptionSource.SYSTEM_RESOURCE -> "System resource active (Camera/Other)"
+            InterruptionSource.NETWORK -> "Network lost"
+            else -> ""
+        }
+        
+        delegate.runOnMainThread {
+            dartMessenger?.send(eventType, message)
+        }
+    }
+
+    private fun updateTimer(source: InterruptionSource) {
+        when (source) {
+            InterruptionSource.NONE -> {
+                cancelInterruptionTimeout()
+            }
+            InterruptionSource.PHONE_CALL, InterruptionSource.SYSTEM_RESOURCE -> {
+                 // 30s Timeout (As requested by user: "check if we are using same logic... wait 30s")
+                 // iOS uses 30s for Phone/System now.
+                 startInterruptionTimeout(SYSTEM_INTERRUPTION_TIMEOUT_MS)
+            }
+            InterruptionSource.NETWORK -> {
+                 // 30s Timeout
+                 startInterruptionTimeout(NETWORK_INTERRUPTION_TIMEOUT_MS)
+            }
+        }
+    }
+
+    private fun startInterruptionTimeout(timeoutMs: Long) {
+        // If timer already running, check if we need to update it?
+        // Logic: If timer is running, and we switch source, do we reset?
+        // iOS Logic: "Interruption already in progress - keeping existing deadline" (Time Conservation)
+        
+        if (interruptionTimerStartedAt != 0L && interruptionDeadlineMs != 0L) {
+            Log.d(TAG, "⏳ Timer already running - preserving deadline")
+            return
+        }
+        
+        cancelInterruptionTimeout() // Safety clear
+        
+        val now = System.currentTimeMillis()
+        interruptionTimerStartedAt = now
+        interruptionDeadlineMs = now + timeoutMs
+        
+        val remainingMs = interruptionDeadlineMs - now
+        
+        interruptionRunnable = Runnable {
+            synchronized(lock) {
+                Log.w(TAG, "❌ Interruption timeout expired (source=${context.currentInterruptionSource})")
+                // Clear stack to prevent zombies? Or just fail?
+                // Typically we fail the stream.
+                
+                delegate.runOnMainThread {
+                     dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Stream stopped due to prolonged interruption")
+                }
+                delegate.transitionTo(StreamEvent.ReconnectionFailed)
+                
+                // Cleanup
+                interruptions.clear()
+                cancelInterruptionTimeout()
+            }
+        }
+        
+        mainHandler.postDelayed(interruptionRunnable!!, remainingMs.coerceAtLeast(0L))
+        Log.i(TAG, "⏳ Timer started: ${timeoutMs/1000}s (source=${context.currentInterruptionSource})")
+    }
+
+    private fun cancelInterruptionTimeout() {
+        if (interruptionRunnable != null) {
+            mainHandler.removeCallbacks(interruptionRunnable!!)
             interruptionRunnable = null
-            Log.d(TAG, "Interruption timer cancelled (source=${context.currentInterruptionSource})")
         }
         interruptionTimerStartedAt = 0L
         interruptionDeadlineMs = 0L
     }
     
+    // Helper for UI
     fun getRemainingInterruptionSeconds(): Int {
-        if (interruptionDeadlineMs == 0L) return 30
-        val remaining = (interruptionDeadlineMs - System.currentTimeMillis()) / 1000
-        return remaining.toInt().coerceAtLeast(0)
+        if (interruptionDeadlineMs == 0L) return 0
+        val now = System.currentTimeMillis()
+        return ((interruptionDeadlineMs - now) / 1000).toInt().coerceAtLeast(0)
     }
+
+    // Deprecated / Removed old boolean flags fields
+    // @Volatile var isNetworkLost = false -> replaced by stack
+    // @Volatile var isPhoneCallActive = false -> replaced by stack
     
     fun handleResumeFromInterruption(isCallActive: Boolean) {
         // Fix for Camera/External App Interruption
         // If we are interrupted by "PhoneCall" (which includes Audio Focus loss)
         // but there is no actual GSM call, and we just resumed, try to resume streaming.
-        if (delegate.getStreamState() == StreamState.INTERRUPTED && context.currentInterruptionSource == InterruptionSource.PHONE_CALL) {
-             if (!isCallActive) {
-                 Log.i(TAG, "Resumed while interrupted by AudioFocus/Camera - attempting resume")
-                 
-                 // Ensure flag is cleared since we know call is inactive
-                 isPhoneCallActive = false
-                 
-                 // Check network status before resuming
-                 if (isNetworkLost) {
-                     Log.w(TAG, "Phone ended but network still lost - staying interrupted as NETWORK")
-                     context.currentInterruptionSource = InterruptionSource.NETWORK
-                     handleNetworkLost() // Ensure timer is running
+        
+        synchronized(lock) {
+            val isPhoneInterrupted = interruptions.any { it.source == InterruptionSource.PHONE_CALL }
+            
+            if (delegate.getStreamState() == StreamState.INTERRUPTED && isPhoneInterrupted) {
+                 if (!isCallActive) {
+                     Log.i(TAG, "Resumed while interrupted by Phone/Focus - Call not active - ending Phone interruption")
+                     // Remove Phone Call from stack
                      handlePhoneInterruptionEnded()
-                 } else {
-                     handleInterruptionEndedInternal()
+                     return
                  }
-                 return
-             }
+            }
+            
+            // Also check for System Resource
+            val isSystemInterrupted = interruptions.any { it.source == InterruptionSource.SYSTEM_RESOURCE }
+            if (delegate.getStreamState() == StreamState.INTERRUPTED && isSystemInterrupted) {
+                Log.i(TAG, "Resumed while interrupted by System Resource - ending System interruption")
+                handleSystemInterruptionEnded()
+                return
+            }
         }
 
         if (context.pendingReconnectOnResume) {
@@ -247,9 +282,11 @@ class InterruptionManager(
     }
 
     fun reset() {
-        cancelInterruptionTimeout()
-        isNetworkLost = false
-        isPhoneCallActive = false
-        context.currentInterruptionSource = InterruptionSource.NONE
+        synchronized(lock) {
+            cancelInterruptionTimeout()
+            interruptions.clear()
+            context.currentInterruptionSource = InterruptionSource.NONE
+            Log.i(TAG, "Reset - Cleared all interruptions")
+        }
     }
 }

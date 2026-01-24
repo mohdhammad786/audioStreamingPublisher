@@ -35,6 +35,32 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
         beginInterruption(source: .phoneCall)
     }
 
+    internal func handleSystemInterruptionBegan() {
+        print("⚠️ System Resource Interruption Began (Camera/Other)")
+
+        if stateMachine.currentState == .interrupted && interruptionManager.currentSource == .network {
+            print("Switching from network to system interruption")
+            interruptionManager.setCurrentSource(.systemResource)
+            interruptionManager.handleInterruptionBegan(source: .systemResource)
+            sendEvent(event: "audio_interrupted", message: "Stream interrupted by system (e.g. Camera/Other App)")
+            return
+        }
+        
+        // Similar priority to phone call (overrides network)
+        if stateMachine.currentState == .reconnecting && interruptionManager.currentSource == .network {
+             print("System interruption during network reconnection")
+             rtmpService.close()
+             _ = stateMachine.transitionTo(.interrupted)
+             interruptionManager.setCurrentSource(.systemResource)
+             interruptionManager.handleInterruptionBegan(source: .systemResource)
+             sendEvent(event: "audio_interrupted", message: "Stream interrupted by system during reconnection")
+             return
+        }
+
+        interruptionManager.setCurrentSource(.systemResource)
+        beginInterruption(source: .systemResource)
+    }
+
     internal func handlePhoneInterruptionEnded() {
         print("📞 Phone Call Interruption Ended")
 
@@ -56,6 +82,29 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
         }
 
         endInterruption(source: .phoneCall)
+    }
+
+    internal func handleSystemInterruptionEnded() {
+        print("⚠️ System Resource Interruption Ended")
+
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        guard interruptionManager.currentSource == .systemResource else {
+            print("⚠️ System interruption ended but current source is \(interruptionManager.currentSource)")
+            return
+        }
+
+        interruptionManager.handleInterruptionEnded(source: .systemResource)
+        
+        if interruptionManager.currentSource == .network {
+            print("🌐 System interruption ended but network lost - switching to network interruption (Scenario 3)")
+            streamingContext.reconnectionSource = .network
+            sendEvent(event: "network_interrupted", message: "Network unavailable after system interruption")
+            return
+        }
+
+        endInterruption(source: .systemResource)
     }
 }
 

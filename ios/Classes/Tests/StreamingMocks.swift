@@ -39,23 +39,32 @@ class MockNetworkMonitor: NetworkMonitor {
 // MARK: - Mock Phone Call Monitor
 class MockPhoneCallMonitor: PhoneCallMonitor {
     var isPhoneCallActive: Bool = false
-    private weak var delegate: PhoneCallMonitorDelegate?
+    var hasActiveCallKitCall: Bool = false
+    var delegate: PhoneCallMonitorDelegate?
+    var isMonitoring = false
     
-    func startMonitoring() {}
-    func stopMonitoring() {}
+    func startMonitoring() {
+        isMonitoring = true
+    }
+    
+    func stopMonitoring() {
+        isMonitoring = false
+    }
     
     func setDelegate(_ delegate: PhoneCallMonitorDelegate?) {
         self.delegate = delegate
     }
     
-    // Test helper
-    func simulateCallStart() {
+    // Test helpers
+    func simulatePhoneCallBegan() {
         isPhoneCallActive = true
+        hasActiveCallKitCall = true
         delegate?.phoneCallDidBegin()
     }
     
-    func simulateCallEnd() {
+    func simulatePhoneCallEnded() {
         isPhoneCallActive = false
+        hasActiveCallKitCall = false
         delegate?.phoneCallDidEnd()
     }
 }

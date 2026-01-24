@@ -5,6 +5,7 @@ import AVFoundation
 /// Protocol for phone call monitoring
 public protocol PhoneCallMonitor {
     var isPhoneCallActive: Bool { get }
+    var hasActiveCallKitCall: Bool { get }
     func startMonitoring()
     func stopMonitoring()
     func setDelegate(_ delegate: PhoneCallMonitorDelegate?)
@@ -25,6 +26,21 @@ public class PhoneCallMonitorImpl: NSObject, PhoneCallMonitor {
     private let lock = NSLock()
 
     public override init() {}
+
+    public var hasActiveCallKitCall: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        if _hasActiveCall {
+            return true
+        }
+        
+        if let calls = callObserver?.calls, !calls.isEmpty {
+            return true
+        }
+        
+        return false
+    }
 
     public var isPhoneCallActive: Bool {
         lock.lock()

@@ -18,5 +18,10 @@ enum class InterruptionSource {
     /**
      * Stream interrupted by network loss (25s timeout).
      */
-    NETWORK
+    NETWORK,
+
+    /**
+     * Stream interrupted by system resource (e.g. Camera, Alarm) (Infinite/30s timeout).
+     */
+    SYSTEM_RESOURCE
 }

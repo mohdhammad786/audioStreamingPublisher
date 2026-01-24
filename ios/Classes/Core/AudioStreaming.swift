@@ -295,8 +295,22 @@ public class AudioStreaming {
             }
         }
 
-        let event = source == .phoneCall ? "audio_interrupted" : "network_interrupted"
-        let message = source == .phoneCall ? "Stream interrupted by phone call" : "Stream interrupted by network loss"
+        var event = ""
+        var message = ""
+        
+        switch source {
+        case .phoneCall:
+            event = "audio_interrupted"
+            message = "Stream interrupted by phone call"
+        case .systemResource:
+             event = "audio_interrupted"
+             message = "Stream interrupted by system resource (e.g. Camera)"
+        case .network:
+            event = "network_interrupted"
+            message = "Stream interrupted by network loss"
+        case .none:
+            return
+        }
 
         sendEvent(event: event, message: message)
         print("📢 Sent interruption event: \(event)")

@@ -1,16 +1,39 @@
 import Foundation
+import UIKit
 
 extension AudioStreaming: SystemNotificationObserverDelegate {
     public func audioInterruptionBegan() {
         print("🔔 System Audio Interruption Began (AVAudioSession)")
-        // Treat as phone call / high priority audio interruption
-        handlePhoneInterruptionBegan()
+        
+        // Distinguish between actual Phone Call and other System Interruptions (Camera, Alarm, Siri)
+        if phoneMonitor.hasActiveCallKitCall {
+             print("🔔 Identified as Phone Call (CallKit)")
+             handlePhoneInterruptionBegan()
+        } else {
+             print("🔔 Identified as System Resource Interruption (e.g. Camera/Other App)")
+             handleSystemInterruptionBegan()
+        }
     }
 
     public func audioInterruptionEnded(shouldResume: Bool) {
         print("🔔 System Audio Interruption Ended. Should Resume: \(shouldResume)")
+        
+        // CRITICAL FIX: Prevent background resumption which can kill the app.
+        if UIApplication.shared.applicationState != .active {
+            print("🔔 Ignoring interruption ended while not active (state: \(UIApplication.shared.applicationState.rawValue)) - waiting for DidBecomeActive")
+            return
+        }
+
         if shouldResume {
-             handlePhoneInterruptionEnded()
+             stateLock.lock()
+             let currentSource = interruptionManager.currentSource
+             stateLock.unlock()
+             
+             if currentSource == .phoneCall {
+                 handlePhoneInterruptionEnded()
+             } else if currentSource == .systemResource {
+                 handleSystemInterruptionEnded()
+             }
         }
     }
 
@@ -40,11 +63,14 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
             
             if currentSource == .phoneCall {
                 print("📱 Active while interrupted by PhoneCall - forcing resume check")
-                if self.phoneMonitor.isPhoneCallActive {
+                if self.phoneMonitor.hasActiveCallKitCall {
                     print("📱 Actual phone call still active - ignoring")
                     return
                 }
                 self.handlePhoneInterruptionEnded()
+            } else if currentSource == .systemResource {
+                 print("📱 Active while interrupted by SystemResource - forcing resume check")
+                 self.handleSystemInterruptionEnded()
             } else if currentSource == .network {
                 print("📱 Active while interrupted by Network - forcing resume check")
                  if self.networkMonitor.isNetworkAvailable {
