@@ -21,7 +21,7 @@ protocol RtmpServiceProtocol: AnyObject {
 
 class RtmpService: RtmpServiceProtocol {
     // MARK: - Properties
-    private var rtmpConnection: RTMPConnection
+    private var rtmpConnection: RTMPConnection?
     private var rtmpStream: RTMPStream?
     weak var delegate: RtmpServiceDelegate?
     private let myDelegate = AudioStreamingQoSDelegate() // Assuming this exists or needs to be moved/shared
@@ -38,9 +38,14 @@ class RtmpService: RtmpServiceProtocol {
     // MARK: - Init
     init(delegate: RtmpServiceDelegate? = nil) {
         self.delegate = delegate
-        self.rtmpConnection = RTMPConnection()
-        self.rtmpStream = RTMPStream(connection: rtmpConnection)
-        self.rtmpStream?.delegate = myDelegate
+        initializeHaishinKit()
+    }
+    
+    private func initializeHaishinKit() {
+        let connection = RTMPConnection()
+        rtmpConnection = connection
+        rtmpStream = RTMPStream(connection: connection)
+        rtmpStream?.delegate = myDelegate
         
         setupListeners()
     }
@@ -50,19 +55,21 @@ class RtmpService: RtmpServiceProtocol {
     }
     
     private func setupListeners() {
-        rtmpConnection.addEventListener(.rtmpStatus, selector: #selector(rtmpStatusHandler), observer: self)
-        rtmpConnection.addEventListener(.ioError, selector: #selector(rtmpErrorHandler), observer: self)
+        rtmpConnection?.addEventListener(.rtmpStatus, selector: #selector(rtmpStatusHandler), observer: self)
+        rtmpConnection?.addEventListener(.ioError, selector: #selector(rtmpErrorHandler), observer: self)
     }
     
     private func removeListeners() {
-        rtmpConnection.removeEventListener(.rtmpStatus, selector: #selector(rtmpStatusHandler), observer: self)
-        rtmpConnection.removeEventListener(.ioError, selector: #selector(rtmpErrorHandler), observer: self)
+        if let connection = rtmpConnection {
+            connection.removeEventListener(.rtmpStatus, selector: #selector(rtmpStatusHandler), observer: self)
+            connection.removeEventListener(.ioError, selector: #selector(rtmpErrorHandler), observer: self)
+        }
     }
     
     // MARK: - Public Methods
     
     func connect(url: String) {
-        rtmpConnection.connect(url)
+        rtmpConnection?.connect(url)
     }
     
     func publish(_ name: String) {
@@ -70,7 +77,7 @@ class RtmpService: RtmpServiceProtocol {
     }
     
     func close() {
-        rtmpConnection.close()
+        rtmpConnection?.close()
     }
     
     func mute() {
@@ -101,6 +108,32 @@ class RtmpService: RtmpServiceProtocol {
             ],
         ]
         print("✅ RtmpService: Audio settings updated: Bitrate=\(self.bitrate), SampleRate=\(self.sampleRate), Stereo=\(self.isStereo)")
+    }
+    
+    // MARK: - Lifecycle Management (Media Services)
+    
+    func forceRelease() {
+        // CRITICAL: Forcefully release references WITHOUT calling cleanup methods.
+        // When Media Services are lost, the underlying C++ objects are already dead.
+        // Calling methods on them (like .close() or .dispose()) causes a crash.
+        print("☠️ RtmpService: Force releasing HaishinKit objects")
+        
+        // Remove listeners first to avoid callbacks on dead objects
+        removeListeners()
+        
+        // Nullify references - This releases the Swift wrappers.
+        // We rely on ARC to deallocate them. We do NOT call dispose().
+        rtmpStream = nil
+        rtmpConnection = nil
+        isAudioAttached = false
+    }
+    
+    func reinitialize() {
+        print("🔄 RtmpService: Re-initializing HaishinKit objects")
+        initializeHaishinKit()
+        
+        // Re-apply settings
+        updateSettings(bitrate: self.bitrate, sampleRate: Int(self.sampleRate), isStereo: self.isStereo)
     }
     
     // MARK: - Audio Attachment Logic (Moved from AudioStreaming)
