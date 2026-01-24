@@ -17,6 +17,8 @@ protocol RtmpServiceProtocol: AnyObject {
     func updateSettings(bitrate: Int?, sampleRate: Int?, isStereo: Bool?)
     func attachAudio(completion: @escaping (Bool, Error?) -> Void)
     func detachAudio(completion: (() -> Void)?)
+    func forceRelease()
+    func reinitialize()
 }
 
 class RtmpService: RtmpServiceProtocol {
