@@ -120,6 +120,8 @@ class MockRtmpService: RtmpServiceProtocol {
     var connectCalled = false
     var closeCalled = false
     var publishCalled = false
+    var forceReleaseCalled = false
+    var reinitializeCalled = false
     var lastUrl: String?
     
     func connect(url: String) {
@@ -145,6 +147,14 @@ class MockRtmpService: RtmpServiceProtocol {
     
     func detachAudio(completion: (() -> Void)?) {
         completion?()
+    }
+
+    func forceRelease() {
+        forceReleaseCalled = true
+    }
+
+    func reinitialize() {
+        reinitializeCalled = true
     }
     
     func simulateStatus(code: String, description: String = "") {

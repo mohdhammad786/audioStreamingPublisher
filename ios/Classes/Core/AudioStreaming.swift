@@ -209,6 +209,10 @@ public class AudioStreaming {
         stateLock.lock()
         let url = streamingContext.savedUrl
         let name = streamingContext.savedName
+        let requiresRtmpReinitialize = streamingContext.requiresRtmpReinitialize
+        if requiresRtmpReinitialize {
+            streamingContext.requiresRtmpReinitialize = false
+        }
         stateLock.unlock()
 
         guard let savedUrl = url, let savedName = name else {
@@ -226,6 +230,10 @@ public class AudioStreaming {
         }
 
         print("🔄 Reconnecting to: \(savedUrl)/\(savedName)")
+
+        if requiresRtmpReinitialize {
+            rtmpService.reinitialize()
+        }
 
         // 1. Force close the existing connection immediately
         self.rtmpService.close()
@@ -292,6 +300,13 @@ public class AudioStreaming {
             DispatchQueue.main.async {
                 self.rtmpService.close()
                 self.audioSessionManager.deactivateAudioSession()
+
+                if source == .systemResource {
+                    self.stateLock.lock()
+                    self.streamingContext.requiresRtmpReinitialize = true
+                    self.stateLock.unlock()
+                    self.rtmpService.forceRelease()
+                }
             }
         }
 
