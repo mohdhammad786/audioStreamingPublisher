@@ -1,4 +1,15 @@
+//
+//  TestInterruptionLogic.swift
+//  flutter_audio_streaming
+//
+//  Created by Trae on 2023/10/26.
+//
+
 import Foundation
+
+/*
+// This file contains test logic that should only be run in a playground or script environment.
+// It is commented out to prevent build errors in the main application.
 
 // --- MOCK / COPIED DEFINITIONS ---
 
@@ -120,3 +131,4 @@ func testStackLogic() {
 }
 
 testStackLogic()
+*/
