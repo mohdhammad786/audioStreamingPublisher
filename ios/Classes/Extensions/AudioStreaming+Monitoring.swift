@@ -12,9 +12,11 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
 
     internal func handlePhoneInterruptionBegan() {
         print("📞 Phone Call Interruption Began")
+        DiagnosticsStore.append("phoneCall began streamState=\(stateMachine.currentState.rawValue)")
 
         if stateMachine.currentState == .interrupted && interruptionManager.currentSource == .network {
             print("Switching from network to phone interruption")
+            DiagnosticsStore.append("switch network->phoneCall while interrupted")
             interruptionManager.setCurrentSource(.phoneCall)
             interruptionManager.handleInterruptionBegan(source: .phoneCall)
             sendEvent(event: "audio_interrupted", message: "Phone call started during network interruption")
@@ -23,6 +25,7 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
 
         if stateMachine.currentState == .reconnecting && interruptionManager.currentSource == .network {
             print("Phone call during network reconnection")
+            DiagnosticsStore.append("phoneCall during network reconnection")
             rtmpService.close()
             _ = stateMachine.transitionTo(.interrupted)
             interruptionManager.setCurrentSource(.phoneCall)
@@ -37,9 +40,11 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
 
     internal func handleSystemInterruptionBegan() {
         print("⚠️ System Resource Interruption Began (Camera/Other)")
+        DiagnosticsStore.append("systemResource began streamState=\(stateMachine.currentState.rawValue) currentSource=\(interruptionManager.currentSource)")
 
         if stateMachine.currentState == .interrupted && interruptionManager.currentSource == .network {
             print("Switching from network to system interruption")
+            DiagnosticsStore.append("switch network->systemResource while interrupted")
             interruptionManager.setCurrentSource(.systemResource)
             interruptionManager.handleInterruptionBegan(source: .systemResource)
             sendEvent(event: "audio_interrupted", message: "Stream interrupted by system (e.g. Camera/Other App)")
@@ -49,6 +54,7 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
         // Similar priority to phone call (overrides network)
         if stateMachine.currentState == .reconnecting && interruptionManager.currentSource == .network {
              print("System interruption during network reconnection")
+             DiagnosticsStore.append("systemResource during network reconnection")
              rtmpService.close()
              _ = stateMachine.transitionTo(.interrupted)
              interruptionManager.setCurrentSource(.systemResource)
@@ -63,12 +69,14 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
 
     internal func handlePhoneInterruptionEnded() {
         print("📞 Phone Call Interruption Ended")
+        DiagnosticsStore.append("phoneCall ended currentSource=\(interruptionManager.currentSource)")
 
         stateLock.lock()
         defer { stateLock.unlock() }
 
         guard interruptionManager.currentSource == .phoneCall else {
             print("⚠️ Phone interruption ended but current source is \(interruptionManager.currentSource)")
+            DiagnosticsStore.append("phoneCall ended ignored due to currentSource mismatch")
             return
         }
 
@@ -76,6 +84,7 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
         
         if interruptionManager.currentSource == .network {
             print("🌐 Phone ended but network lost - switching to network interruption (Scenario 3)")
+            DiagnosticsStore.append("phoneCall ended but network interruption remains")
             streamingContext.reconnectionSource = .network
             sendEvent(event: "network_interrupted", message: "Network unavailable after phone call ended")
             return
@@ -86,12 +95,14 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
 
     internal func handleSystemInterruptionEnded() {
         print("⚠️ System Resource Interruption Ended")
+        DiagnosticsStore.append("systemResource ended currentSource=\(interruptionManager.currentSource)")
 
         stateLock.lock()
         defer { stateLock.unlock() }
 
         guard interruptionManager.currentSource == .systemResource else {
             print("⚠️ System interruption ended but current source is \(interruptionManager.currentSource)")
+            DiagnosticsStore.append("systemResource ended ignored due to currentSource mismatch")
             return
         }
 
@@ -99,6 +110,7 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
         
         if interruptionManager.currentSource == .network {
             print("🌐 System interruption ended but network lost - switching to network interruption (Scenario 3)")
+            DiagnosticsStore.append("systemResource ended but network interruption remains")
             streamingContext.reconnectionSource = .network
             sendEvent(event: "network_interrupted", message: "Network unavailable after system interruption")
             return
@@ -120,8 +132,10 @@ extension AudioStreaming: NetworkMonitorDelegate {
 
     internal func handleNetworkLost() {
         print("🌐 Network Lost")
+        DiagnosticsStore.append("network lost streamState=\(stateMachine.currentState.rawValue) currentSource=\(interruptionManager.currentSource)")
 
         if interruptionManager.currentSource == .phoneCall {
+            DiagnosticsStore.append("network lost during phoneCall")
             interruptionManager.setNetworkLostDuringPhoneCall(true)
             return
         }
@@ -132,6 +146,7 @@ extension AudioStreaming: NetworkMonitorDelegate {
 
         if stateMachine.currentState == .reconnecting && hasSavedUrl {
             print("Network lost during reconnection")
+            DiagnosticsStore.append("network lost during reconnecting")
             rtmpService.close()
             _ = stateMachine.transitionTo(.interrupted)
             interruptionManager.setCurrentSource(.network)
@@ -150,9 +165,11 @@ extension AudioStreaming: NetworkMonitorDelegate {
 
     internal func handleNetworkAvailable() {
         print("🌐 Network Available")
+        DiagnosticsStore.append("network available streamState=\(stateMachine.currentState.rawValue) currentSource=\(interruptionManager.currentSource)")
 
         guard stateMachine.currentState == .interrupted else {
             print("🌐 Network available but not in interrupted state (current: \(stateMachine.currentState.description))")
+            DiagnosticsStore.append("network available ignored because not interrupted")
             return
         }
 
@@ -164,6 +181,7 @@ extension AudioStreaming: NetworkMonitorDelegate {
         if currentSource == .phoneCall {
             if interruptionManager.hasNetworkLossDuringPhoneCall {
                 print("📞 Network came back during phone call - clearing flag, will reconnect after call")
+                DiagnosticsStore.append("network available during phoneCall clearing flag")
                 interruptionManager.setNetworkLostDuringPhoneCall(false)
             }
             return
@@ -171,10 +189,12 @@ extension AudioStreaming: NetworkMonitorDelegate {
 
         guard currentSource == .network else {
             print("⚠️ Network available but current source is \(currentSource) - cannot reconnect")
+            DiagnosticsStore.append("network available ignored due to currentSource mismatch")
             return
         }
 
         print("🌐 Ending network interruption - will reconnect")
+        DiagnosticsStore.append("ending network interruption")
         
         interruptionManager.cancelTimer()
         
@@ -184,6 +204,7 @@ extension AudioStreaming: NetworkMonitorDelegate {
             
             guard self.networkMonitor.isNetworkAvailable else {
                 print("🌐 Network became unavailable during stabilization delay - restarting interruption logic")
+                DiagnosticsStore.append("network unstable during stabilization")
                 self.interruptionManager.handleInterruptionBegan(source: .network)
                 return
             }

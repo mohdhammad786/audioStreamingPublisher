@@ -44,6 +44,7 @@ public class ReconnectionManagerImpl: ReconnectionManager {
     private var _retryCount: Int = 0
     private weak var delegate: ReconnectionManagerDelegate?
     private let lock = NSLock()
+    private var scheduledRetryWorkItem: DispatchWorkItem?
 
     public var isRetrying: Bool {
         lock.lock()
@@ -79,7 +80,10 @@ public class ReconnectionManagerImpl: ReconnectionManager {
     public func cancelReconnection() {
         lock.lock()
         _isRetrying = false
+        let workItem = scheduledRetryWorkItem
+        scheduledRetryWorkItem = nil
         lock.unlock()
+        workItem?.cancel()
         print("🔄 ReconnectionManager: Cancelled reconnection")
     }
 
@@ -116,6 +120,8 @@ public class ReconnectionManagerImpl: ReconnectionManager {
 
         _retryCount += 1
         _isRetrying = true
+        let previousWorkItem = scheduledRetryWorkItem
+        scheduledRetryWorkItem = nil
 
         let delay: TimeInterval
         if config.exponentialBackoff {
@@ -127,21 +133,37 @@ public class ReconnectionManagerImpl: ReconnectionManager {
         let attempt = _retryCount
         lock.unlock()
 
+        previousWorkItem?.cancel()
+
         print("🔄 ReconnectionManager: Scheduling retry attempt \(attempt) after \(delay)s")
         delegate?.reconnectionRetrying(attempt: attempt, delay: delay)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        var workItem: DispatchWorkItem?
+        workItem = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
+            guard let workItem = workItem, !workItem.isCancelled else { return }
 
             self.lock.lock()
             self._isRetrying = false
+            if self.scheduledRetryWorkItem === workItem {
+                self.scheduledRetryWorkItem = nil
+            }
             self.lock.unlock()
 
             completion()
         }
+
+        lock.lock()
+        scheduledRetryWorkItem = workItem
+        lock.unlock()
+
+        if let workItem = workItem {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        }
     }
 
     public func notifySuccess() {
+        cancelReconnection()
         lock.lock()
         _retryCount = 0
         _isRetrying = false
@@ -151,6 +173,7 @@ public class ReconnectionManagerImpl: ReconnectionManager {
     }
 
     public func notifyFailure(error: String) {
+        cancelReconnection()
         lock.lock()
         _isRetrying = false
         lock.unlock()

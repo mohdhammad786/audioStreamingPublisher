@@ -26,6 +26,8 @@ public class AudioStreaming {
     // MARK: - Context & State
     internal var streamingContext = StreamingContext()
     internal let stateLock = NSRecursiveLock()
+    private let previousRunDiagnostics: [String: Any]
+    private var didEmitDiagnostics = false
     
     // MARK: - Initialization
     
@@ -40,6 +42,8 @@ public class AudioStreaming {
         eventEmitter: StreamEventEmitterProtocol,
         notificationObserver: SystemNotificationObserverProtocol
     ) {
+        previousRunDiagnostics = DiagnosticsStore.beginSession()
+        DiagnosticsStore.append("AudioStreaming.init")
         self.stateMachine = stateMachine
         self.phoneMonitor = phoneMonitor
         self.networkMonitor = networkMonitor
@@ -75,6 +79,9 @@ public class AudioStreaming {
     }
 
     public func setup(result: @escaping FlutterResult) {
+        DiagnosticsStore.append("setup called")
+        emitDiagnosticsIfNeeded()
+
         // Check if there's an active phone call before setup
         if phoneMonitor.isPhoneCallActive {
             result(FlutterError(
@@ -121,6 +128,7 @@ public class AudioStreaming {
     
     // MARK: - Streaming Control
     public func start(url: String, result: @escaping FlutterResult) {
+        DiagnosticsStore.append("start requested url=\(url)")
         guard stateMachine.currentState == .idle else {
             print("Cannot start - stream is in state: \(stateMachine.currentState.description)")
             if stateMachine.currentState == .interrupted || stateMachine.currentState == .reconnecting {
@@ -165,6 +173,8 @@ public class AudioStreaming {
     }
 
     public func stop() {
+        DiagnosticsStore.append("stop called")
+        DiagnosticsStore.markGracefulEnd()
         networkMonitor.stopMonitoring()
         reconnectionManager.cancelReconnection() // Ensure no pending retries fire
 
@@ -193,6 +203,8 @@ public class AudioStreaming {
     }
 
     public func dispose() {
+        DiagnosticsStore.append("dispose called")
+        DiagnosticsStore.markGracefulEnd()
         interruptionManager.clearAllInterruptions()
         networkMonitor.stopMonitoring()
         phoneMonitor.stopMonitoring()
@@ -201,6 +213,29 @@ public class AudioStreaming {
         // Synchronous cleanup attempt (simplified for service)
         rtmpService.detachAudio(completion: nil)
         audioSessionManager.deactivateAudioSession()
+    }
+
+    private func emitDiagnosticsIfNeeded() {
+        guard !didEmitDiagnostics else { return }
+        didEmitDiagnostics = true
+
+        var details = previousRunDiagnostics
+        details["logLines"] = DiagnosticsStore.readLines()
+        details["currentState"] = stateMachine.currentState.rawValue
+        details["processUptimeSeconds"] = ProcessInfo.processInfo.systemUptime
+        details["appState"] = UIApplication.shared.applicationState.rawValue
+        if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+            details["appVersion"] = version
+        }
+        if let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
+            details["appBuild"] = build
+        }
+
+        eventEmitter.sendEvent(
+            event: "diagnostic_last_run",
+            message: "diagnostics",
+            details: details
+        )
     }
     
     // MARK: - Internal Helpers
@@ -230,8 +265,10 @@ public class AudioStreaming {
         }
 
         print("🔄 Reconnecting to: \(savedUrl)/\(savedName)")
+        DiagnosticsStore.append("reconnectStream begin requiresRtmpReinitialize=\(requiresRtmpReinitialize) url=\(savedUrl)")
 
         if requiresRtmpReinitialize {
+            DiagnosticsStore.append("reconnectStream reinitialize rtmp")
             rtmpService.reinitialize()
         }
 
@@ -252,11 +289,13 @@ public class AudioStreaming {
 
                     guard self.stateMachine.currentState == .reconnecting else {
                         print("⚠️ Reconnection aborted - state changed to \(self.stateMachine.currentState.description)")
+                        DiagnosticsStore.append("reconnectStream aborted state=\(self.stateMachine.currentState.rawValue)")
                         return
                     }
 
                     guard success else {
                         print("❌ Failed to activate audio session after retries")
+                        DiagnosticsStore.append("reconnectStream audio session activation failed")
                         _ = self.stateMachine.transitionTo(.failed)
                         self.sendEvent(event: "error", message: "Audio session activation failed after phone call")
                         return
@@ -268,12 +307,14 @@ public class AudioStreaming {
                         
                         if let attachError = attachError {
                             print("❌ Failed to reattach audio: \(attachError)")
+                            DiagnosticsStore.append("reconnectStream attachAudio failed")
                             _ = self.stateMachine.transitionTo(.failed)
                             self.sendEvent(event: "error", message: "Failed to attach audio device")
                             return
                         }
                         
                         print("🔄 Connecting to RTMP server...")
+                        DiagnosticsStore.append("reconnectStream connecting rtmp")
                         self.rtmpService.connect(url: savedUrl)
                     }
                 }
@@ -283,6 +324,8 @@ public class AudioStreaming {
 
     internal func beginInterruption(source: InterruptionSource) {
         print("🔄 Beginning interruption for \(source)")
+        DiagnosticsStore.append("beginInterruption source=\(source) streamState=\(stateMachine.currentState.rawValue)")
+        reconnectionManager.cancelReconnection()
         
         stateLock.lock()
         streamingContext.saveCurrent(source: source)
@@ -305,6 +348,7 @@ public class AudioStreaming {
                     self.stateLock.lock()
                     self.streamingContext.requiresRtmpReinitialize = true
                     self.stateLock.unlock()
+                    DiagnosticsStore.append("beginInterruption systemResource forceRelease")
                     self.rtmpService.forceRelease()
                 }
             }
@@ -329,6 +373,7 @@ public class AudioStreaming {
 
         sendEvent(event: event, message: message)
         print("📢 Sent interruption event: \(event)")
+        DiagnosticsStore.append("interruption event sent event=\(event)")
 
         interruptionManager.handleInterruptionBegan(source: source)
 
@@ -344,6 +389,7 @@ public class AudioStreaming {
         guard stateMachine.currentState == .interrupted else {
             return
         }
+        DiagnosticsStore.append("endInterruption source=\(source)")
 
         interruptionManager.handleInterruptionEnded(source: source)
         

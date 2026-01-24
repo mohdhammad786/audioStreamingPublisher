@@ -4,19 +4,23 @@ import UIKit
 extension AudioStreaming: SystemNotificationObserverDelegate {
     public func audioInterruptionBegan() {
         print("🔔 System Audio Interruption Began (AVAudioSession)")
+        DiagnosticsStore.append("AVAudioSession interruption began appState=\(UIApplication.shared.applicationState.rawValue) streamState=\(stateMachine.currentState.rawValue)")
         
         // Distinguish between actual Phone Call and other System Interruptions (Camera, Alarm, Siri)
         if phoneMonitor.hasActiveCallKitCall {
              print("🔔 Identified as Phone Call (CallKit)")
+             DiagnosticsStore.append("interruption classified phoneCall")
              handlePhoneInterruptionBegan()
         } else {
              print("🔔 Identified as System Resource Interruption (e.g. Camera/Other App)")
+             DiagnosticsStore.append("interruption classified systemResource")
              handleSystemInterruptionBegan()
         }
     }
     
     public func mediaServicesWereLost() {
         print("☠️ Media Services Lost - Emergency Cleanup")
+        DiagnosticsStore.append("mediaServicesWereLost streamState=\(stateMachine.currentState.rawValue)")
         
         // CRITICAL FIX: Use forceRelease to abandon dead HaishinKit objects.
         // This prevents the app from crashing by not touching invalid Core Audio pointers.
@@ -30,6 +34,7 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
     
     public func mediaServicesWereReset() {
         print("🔄 Media Services Reset - Re-initializing Audio Engine")
+        DiagnosticsStore.append("mediaServicesWereReset streamState=\(stateMachine.currentState.rawValue)")
         
         // 1. Rebuild the HaishinKit stack (Connection/Stream)
         rtmpService.reinitialize()
@@ -40,6 +45,7 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
             
             if !success {
                 print("❌ Failed to re-configure audio session after reset: \(String(describing: error))")
+                DiagnosticsStore.append("audio session reconfigure failed after reset")
                 // If session configuration fails, we move to failed state
                 _ = self.stateMachine.transitionTo(.failed)
                 return
@@ -51,14 +57,17 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
                 
                 if attached {
                     print("✅ Audio successfully re-attached after Media Services Reset")
+                    DiagnosticsStore.append("audio re-attached after reset")
                     
                     // 4. Attempt to resume if we were interrupted
                     if self.stateMachine.currentState == .interrupted {
                          print("🔄 Triggering resumption from Media Services Reset...")
+                         DiagnosticsStore.append("resume from mediaServicesWereReset")
                          self.endInterruption(source: .systemResource)
                     }
                 } else {
                     print("❌ Failed to attach audio after reset: \(String(describing: error))")
+                    DiagnosticsStore.append("audio attach failed after reset")
                     _ = self.stateMachine.transitionTo(.failed)
                 }
             }
@@ -67,10 +76,12 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
 
     public func audioInterruptionEnded(shouldResume: Bool) {
         print("🔔 System Audio Interruption Ended. Should Resume: \(shouldResume)")
+        DiagnosticsStore.append("AVAudioSession interruption ended shouldResume=\(shouldResume) appState=\(UIApplication.shared.applicationState.rawValue) streamState=\(stateMachine.currentState.rawValue)")
         
         // CRITICAL FIX: Prevent background resumption which can kill the app.
         if UIApplication.shared.applicationState != .active {
             print("🔔 Ignoring interruption ended while not active (state: \(UIApplication.shared.applicationState.rawValue)) - waiting for DidBecomeActive")
+            DiagnosticsStore.append("ignored interruption ended because app not active")
             return
         }
 
@@ -80,8 +91,10 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
              stateLock.unlock()
              
              if currentSource == .phoneCall {
+                DiagnosticsStore.append("resume path phoneCall")
                  handlePhoneInterruptionEnded()
              } else if currentSource == .systemResource {
+                DiagnosticsStore.append("resume path systemResource")
                  handleSystemInterruptionEnded()
              }
         }
@@ -89,6 +102,7 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
 
     public func applicationDidBecomeActive() {
         print("📱 Application Did Become Active")
+        DiagnosticsStore.append("UIApplication didBecomeActive streamState=\(stateMachine.currentState.rawValue)")
         
         // Resumption is now handled primarily by 'audioInterruptionEnded'
         // But we keep this as a safeguard for edge cases where the OS interruption ended logic
@@ -97,6 +111,7 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
         // Only resume if we were in an INTERRUPTED state
         guard stateMachine.currentState == .interrupted else {
              print("📱 Active but not in INTERRUPTED state (current: \(stateMachine.currentState.description)) - Ignoring auto-resume")
+             DiagnosticsStore.append("didBecomeActive ignored because not interrupted")
              return
         }
         
@@ -107,6 +122,7 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
             // Re-check state after delay
             guard self.stateMachine.currentState == .interrupted else {
                 print("📱 State changed during safety delay (current: \(self.stateMachine.currentState.description)) - aborting resume")
+                DiagnosticsStore.append("didBecomeActive resume aborted due to state change")
                 return
             }
 
@@ -116,16 +132,20 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
             
             if currentSource == .phoneCall {
                 print("📱 Active while interrupted by PhoneCall - forcing resume check")
+                DiagnosticsStore.append("didBecomeActive forcing phoneCall resume check")
                 if self.phoneMonitor.hasActiveCallKitCall {
                     print("📱 Actual phone call still active - ignoring")
+                    DiagnosticsStore.append("didBecomeActive phoneCall still active")
                     return
                 }
                 self.handlePhoneInterruptionEnded()
             } else if currentSource == .systemResource {
                  print("📱 Active while interrupted by SystemResource - forcing resume check")
+                 DiagnosticsStore.append("didBecomeActive forcing systemResource resume check")
                  self.handleSystemInterruptionEnded()
             } else if currentSource == .network {
                 print("📱 Active while interrupted by Network - forcing resume check")
+                 DiagnosticsStore.append("didBecomeActive forcing network resume check")
                  if self.networkMonitor.isNetworkAvailable {
                      self.handleNetworkAvailable()
                  }
@@ -135,6 +155,7 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
 
     public func applicationDidEnterBackground() {
         print("📱 Application Did Enter Background")
+        DiagnosticsStore.append("UIApplication didEnterBackground streamState=\(stateMachine.currentState.rawValue)")
         
         // CRITICAL FIX: We do NOT force an interruption here anymore.
         // Reason: Audio Streaming apps are expected to continue in the background.

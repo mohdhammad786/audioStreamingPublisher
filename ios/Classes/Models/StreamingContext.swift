@@ -103,3 +103,79 @@ extension StreamingContext {
         return Date().timeIntervalSince1970 - startedAt
     }
 }
+
+struct DiagnosticsStore {
+    private static let defaults = UserDefaults.standard
+
+    private static let keySessionId = "com.resideo.flutter_audio_streaming.diagnostics.sessionId"
+    private static let keySessionStartedAt = "com.resideo.flutter_audio_streaming.diagnostics.sessionStartedAt"
+    private static let keyLastHeartbeatAt = "com.resideo.flutter_audio_streaming.diagnostics.lastHeartbeatAt"
+    private static let keyLastGracefulEndAt = "com.resideo.flutter_audio_streaming.diagnostics.lastGracefulEndAt"
+    private static let keyLastKnownState = "com.resideo.flutter_audio_streaming.diagnostics.lastKnownState"
+    private static let keyLogLines = "com.resideo.flutter_audio_streaming.diagnostics.logLines"
+
+    static func beginSession() -> [String: Any] {
+        let now = Date().timeIntervalSince1970
+        let prevSessionId = defaults.string(forKey: keySessionId)
+        let prevStartedAt = defaults.double(forKey: keySessionStartedAt)
+        let prevHeartbeatAt = defaults.double(forKey: keyLastHeartbeatAt)
+        let prevGracefulEndAt = defaults.double(forKey: keyLastGracefulEndAt)
+        let prevState = defaults.string(forKey: keyLastKnownState)
+
+        let hadPreviousSession = (prevSessionId != nil && prevStartedAt > 0)
+        let previousEndedGracefully = (prevGracefulEndAt > 0 && prevGracefulEndAt >= prevHeartbeatAt)
+        let previousLikelyUnexpected = hadPreviousSession && !previousEndedGracefully && prevHeartbeatAt > 0 && (now - prevHeartbeatAt) < 3600
+
+        let newSessionId = UUID().uuidString
+        defaults.set(newSessionId, forKey: keySessionId)
+        defaults.set(now, forKey: keySessionStartedAt)
+        defaults.set(now, forKey: keyLastHeartbeatAt)
+        defaults.removeObject(forKey: keyLastGracefulEndAt)
+
+        let info: [String: Any] = [
+            "previousSessionId": prevSessionId as Any,
+            "previousStartedAt": prevStartedAt,
+            "previousLastHeartbeatAt": prevHeartbeatAt,
+            "previousLastGracefulEndAt": prevGracefulEndAt,
+            "previousLastKnownState": prevState as Any,
+            "previousLikelyUnexpectedTermination": previousLikelyUnexpected,
+            "currentSessionId": newSessionId,
+            "currentSessionStartedAt": now
+        ]
+        return info
+    }
+
+    static func markGracefulEnd() {
+        let now = Date().timeIntervalSince1970
+        defaults.set(now, forKey: keyLastGracefulEndAt)
+        defaults.set(now, forKey: keyLastHeartbeatAt)
+    }
+
+    static func setLastKnownState(_ state: String) {
+        defaults.set(state, forKey: keyLastKnownState)
+        defaults.set(Date().timeIntervalSince1970, forKey: keyLastHeartbeatAt)
+    }
+
+    static func heartbeat() {
+        defaults.set(Date().timeIntervalSince1970, forKey: keyLastHeartbeatAt)
+    }
+
+    static func append(_ message: String) {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let sessionId = defaults.string(forKey: keySessionId) ?? "unknown"
+        let line = "\(now) | \(sessionId) | \(message)"
+
+        let existing = (defaults.array(forKey: keyLogLines) as? [String]) ?? []
+        var updated = existing
+        updated.append(line)
+        if updated.count > 300 {
+            updated.removeFirst(updated.count - 300)
+        }
+        defaults.set(updated, forKey: keyLogLines)
+        defaults.set(Date().timeIntervalSince1970, forKey: keyLastHeartbeatAt)
+    }
+
+    static func readLines() -> [String] {
+        return (defaults.array(forKey: keyLogLines) as? [String]) ?? []
+    }
+}
