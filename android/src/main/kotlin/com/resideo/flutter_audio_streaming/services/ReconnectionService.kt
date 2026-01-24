@@ -9,6 +9,7 @@ import com.resideo.flutter_audio_streaming.interfaces.StreamingMediator
 import com.resideo.flutter_audio_streaming.models.StreamEvent
 import com.resideo.flutter_audio_streaming.models.StreamState
 import com.resideo.flutter_audio_streaming.models.StreamingContext
+import com.resideo.flutter_audio_streaming.models.InterruptionSource
 
 class ReconnectionService(
     private val streamingContext: StreamingContext,
@@ -44,7 +45,7 @@ class ReconnectionService(
         // Run reconnection on Main Thread with delay
         mainHandler.postDelayed({
             // Re-check state after delay
-            if (interruptionManager.isPhoneCallActive || interruptionManager.isNetworkLost || mediator.getStreamState() != StreamState.INTERRUPTED) {
+            if (streamingContext.currentInterruptionSource != InterruptionSource.NONE || mediator.getStreamState() != StreamState.INTERRUPTED) {
                 Log.w(TAG, "Reconnection aborted - state changed during delay")
                 return@postDelayed
             }

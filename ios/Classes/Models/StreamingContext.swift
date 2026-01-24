@@ -102,6 +102,10 @@ extension StreamingContext {
         if startedAt <= 0 { return nil }
         return Date().timeIntervalSince1970 - startedAt
     }
+
+    static func loadPersistedInterruptionSourceRaw() -> String? {
+        return defaults.string(forKey: keyInterruptionSource)
+    }
 }
 
 struct DiagnosticsStore {

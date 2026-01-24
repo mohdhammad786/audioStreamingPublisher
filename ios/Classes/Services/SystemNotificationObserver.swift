@@ -7,6 +7,11 @@ protocol SystemNotificationObserverDelegate: AnyObject {
     func audioInterruptionEnded(shouldResume: Bool)
     func applicationDidBecomeActive()
     func applicationDidEnterBackground()
+    func applicationWillResignActive()
+    func applicationWillEnterForeground()
+    func applicationWillTerminate()
+    func applicationDidReceiveMemoryWarning()
+    func audioRouteChanged(reasonRawValue: UInt)
     func mediaServicesWereLost()
     func mediaServicesWereReset()
 }
@@ -42,6 +47,41 @@ class SystemNotificationObserver: SystemNotificationObserverProtocol {
             selector: #selector(handleApplicationDidEnterBackground),
             name: UIApplication.didEnterBackgroundNotification,
             object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationWillResignActive),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationWillTerminate),
+            name: UIApplication.willTerminateNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationDidReceiveMemoryWarning),
+            name: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioRouteChanged(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance()
         )
         
         // Media Services Lost/Reset
@@ -107,6 +147,27 @@ class SystemNotificationObserver: SystemNotificationObserverProtocol {
     
     @objc private func handleApplicationDidEnterBackground() {
         delegate?.applicationDidEnterBackground()
+    }
+
+    @objc private func handleApplicationWillResignActive() {
+        delegate?.applicationWillResignActive()
+    }
+
+    @objc private func handleApplicationWillEnterForeground() {
+        delegate?.applicationWillEnterForeground()
+    }
+
+    @objc private func handleApplicationWillTerminate() {
+        delegate?.applicationWillTerminate()
+    }
+
+    @objc private func handleApplicationDidReceiveMemoryWarning() {
+        delegate?.applicationDidReceiveMemoryWarning()
+    }
+
+    @objc private func handleAudioRouteChanged(_ notification: Notification) {
+        let reasonRawValue = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) ?? 0
+        delegate?.audioRouteChanged(reasonRawValue: reasonRawValue)
     }
     
     @objc private func handleMediaServicesWereLost(_ notification: Notification) {

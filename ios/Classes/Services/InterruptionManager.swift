@@ -39,6 +39,7 @@ public class InterruptionManagerImpl: InterruptionManager {
     private var interruptionTimer: DispatchSourceTimer?
     private var interruptionStartedAt: Date?
     private var interruptionDeadline: Date?
+    private var timerSource: InterruptionSource?
     
     // Professional Stack-based storage
     private var interruptions: [Interruption] = []
@@ -128,13 +129,16 @@ public class InterruptionManagerImpl: InterruptionManager {
         internalCancelTimer()
     }
 
-    private func internalCancelTimer() {
+    private func internalCancelTimer(clearDeadline: Bool = true) {
         if interruptionTimer != nil {
             print("⏸️ InterruptionManager: Cancelling timer")
             interruptionTimer?.cancel()
             interruptionTimer = nil
-            interruptionDeadline = nil
-            interruptionStartedAt = nil
+            timerSource = nil
+            if clearDeadline {
+                interruptionDeadline = nil
+                interruptionStartedAt = nil
+            }
         }
     }
 
@@ -195,15 +199,21 @@ public class InterruptionManagerImpl: InterruptionManager {
         case .phoneCall:
              // Phone Call -> Use phoneCallTimeout
             let timeout = config.phoneCallTimeout
-             if interruptionTimer == nil {
-                 print("⏸️ InterruptionManager: Starting timer for Phone Call (\(timeout)s)")
-                 startTimer(for: .phoneCall, timeout: timeout)
-             }
+            if interruptionDeadline == nil || interruptionTimer == nil || timerSource != .phoneCall {
+                if interruptionTimer != nil && timerSource != .phoneCall {
+                    internalCancelTimer(clearDeadline: false)
+                }
+                print("⏸️ InterruptionManager: Starting timer for Phone Call (\(timeout)s)")
+                startTimer(for: .phoneCall, timeout: timeout)
+            }
              
         case .systemResource:
             // System Resource (e.g. Camera) -> Use systemTimeout
             let timeout = config.systemTimeout
-            if interruptionTimer == nil {
+            if interruptionDeadline == nil || interruptionTimer == nil || timerSource != .systemResource {
+                if interruptionTimer != nil && timerSource != .systemResource {
+                    internalCancelTimer(clearDeadline: false)
+                }
                 print("⏸️ InterruptionManager: Starting timer for System Resource (\(timeout)s)")
                 startTimer(for: .systemResource, timeout: timeout)
             }
@@ -211,11 +221,12 @@ public class InterruptionManagerImpl: InterruptionManager {
         case .network:
             // Finite timeout -> Ensure timer is running
             let timeout = config.networkTimeout
-            if interruptionTimer == nil {
+            if interruptionDeadline == nil || interruptionTimer == nil || timerSource != .network {
+                if interruptionTimer != nil && timerSource != .network {
+                    internalCancelTimer(clearDeadline: false)
+                }
                 print("⏸️ InterruptionManager: Starting timer for Network (\(timeout)s)")
                 startTimer(for: .network, timeout: timeout)
-            } else {
-                // Timer already running - leave it alone (Time Conservation)
             }
         }
     }
@@ -237,18 +248,23 @@ public class InterruptionManagerImpl: InterruptionManager {
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
             self.lock.lock()
-            
-            // Re-verify source when timer fires
-            let current = self.interruptions.last?.source ?? .none // Or use priority logic?
-            // If we timed out, it's because of the active finite interruption (Network)
-            
+            let shouldFire: Bool
+            if let deadline = self.interruptionDeadline {
+                shouldFire = !self.interruptions.isEmpty && Date() >= deadline
+            } else {
+                shouldFire = false
+            }
+
             self.internalCancelTimer()
             self.lock.unlock()
             
+            guard shouldFire else { return }
+
             print("⏸️ InterruptionManager: Timeout expired")
             self.delegate?.interruptionTimedOut(source: source)
         }
 
+        timerSource = source
         interruptionTimer = timer
         timer.resume()
 

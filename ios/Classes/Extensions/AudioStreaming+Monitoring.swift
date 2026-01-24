@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // MARK: - PhoneCallMonitorDelegate
 extension AudioStreaming: PhoneCallMonitorDelegate {
@@ -71,6 +72,11 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
         print("📞 Phone Call Interruption Ended")
         DiagnosticsStore.append("phoneCall ended currentSource=\(interruptionManager.currentSource)")
 
+        if UIApplication.shared.applicationState != .active {
+            DiagnosticsStore.append("phoneCall ended deferred because app not active")
+            return
+        }
+
         stateLock.lock()
         defer { stateLock.unlock() }
 
@@ -96,6 +102,11 @@ extension AudioStreaming: PhoneCallMonitorDelegate {
     internal func handleSystemInterruptionEnded() {
         print("⚠️ System Resource Interruption Ended")
         DiagnosticsStore.append("systemResource ended currentSource=\(interruptionManager.currentSource)")
+
+        if UIApplication.shared.applicationState != .active {
+            DiagnosticsStore.append("systemResource ended deferred because app not active")
+            return
+        }
 
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -166,6 +177,11 @@ extension AudioStreaming: NetworkMonitorDelegate {
     internal func handleNetworkAvailable() {
         print("🌐 Network Available")
         DiagnosticsStore.append("network available streamState=\(stateMachine.currentState.rawValue) currentSource=\(interruptionManager.currentSource)")
+
+        if UIApplication.shared.applicationState != .active {
+            DiagnosticsStore.append("network available deferred because app not active")
+            return
+        }
 
         guard stateMachine.currentState == .interrupted else {
             print("🌐 Network available but not in interrupted state (current: \(stateMachine.currentState.description))")

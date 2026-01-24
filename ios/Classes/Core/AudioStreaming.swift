@@ -175,6 +175,7 @@ public class AudioStreaming {
     public func stop() {
         DiagnosticsStore.append("stop called")
         DiagnosticsStore.markGracefulEnd()
+        StreamingContext.clearPersistedInterruption()
         networkMonitor.stopMonitoring()
         reconnectionManager.cancelReconnection() // Ensure no pending retries fire
 
@@ -205,6 +206,7 @@ public class AudioStreaming {
     public func dispose() {
         DiagnosticsStore.append("dispose called")
         DiagnosticsStore.markGracefulEnd()
+        StreamingContext.clearPersistedInterruption()
         interruptionManager.clearAllInterruptions()
         networkMonitor.stopMonitoring()
         phoneMonitor.stopMonitoring()
@@ -224,6 +226,12 @@ public class AudioStreaming {
         details["currentState"] = stateMachine.currentState.rawValue
         details["processUptimeSeconds"] = ProcessInfo.processInfo.systemUptime
         details["appState"] = UIApplication.shared.applicationState.rawValue
+        if let interruptionAgeSeconds = StreamingContext.loadPersistedInterruptionAgeSeconds() {
+            details["persistedInterruptionAgeSeconds"] = interruptionAgeSeconds
+        }
+        if let interruptionSourceRaw = StreamingContext.loadPersistedInterruptionSourceRaw() {
+            details["persistedInterruptionSource"] = interruptionSourceRaw
+        }
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
             details["appVersion"] = version
         }
@@ -336,6 +344,8 @@ public class AudioStreaming {
             return
         }
 
+        StreamingContext.persistInterruptionBegan(source: source)
+
         // Safe cleanup via service
         rtmpService.detachAudio { [weak self] in
             guard let self = self else { return }
@@ -391,6 +401,7 @@ public class AudioStreaming {
         }
         DiagnosticsStore.append("endInterruption source=\(source)")
 
+        StreamingContext.clearPersistedInterruption()
         interruptionManager.handleInterruptionEnded(source: source)
         
         reconnectionManager.resetRetryCount()

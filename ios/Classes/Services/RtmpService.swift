@@ -44,6 +44,12 @@ class RtmpService: RtmpServiceProtocol {
     }
     
     private func initializeHaishinKit() {
+        removeListeners()
+        rtmpStream?.delegate = nil
+        rtmpStream = nil
+        rtmpConnection = nil
+        isAudioAttached = false
+
         let connection = RTMPConnection()
         rtmpConnection = connection
         rtmpStream = RTMPStream(connection: connection)

@@ -17,6 +17,7 @@ extension AudioStreaming: InterruptionManagerDelegate {
         print("❌ Interruption timed out - terminating stream")
         DiagnosticsStore.append("timeout -> transition failed and close")
         _ = stateMachine.transitionTo(.failed)
+        StreamingContext.clearPersistedInterruption()
         sendEvent(event: "rtmp_stopped", message: "Stream stopped due to prolonged interruption")
         
         rtmpService.close()

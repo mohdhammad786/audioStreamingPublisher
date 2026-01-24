@@ -63,7 +63,11 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
                     if self.stateMachine.currentState == .interrupted {
                          print("🔄 Triggering resumption from Media Services Reset...")
                          DiagnosticsStore.append("resume from mediaServicesWereReset")
-                         self.endInterruption(source: .systemResource)
+                         if UIApplication.shared.applicationState == .active {
+                             self.endInterruption(source: .systemResource)
+                         } else {
+                             DiagnosticsStore.append("mediaServicesWereReset resume deferred because app not active")
+                         }
                     }
                 } else {
                     print("❌ Failed to attach audio after reset: \(String(describing: error))")
@@ -162,5 +166,35 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
         // If the user opens another app that uses audio (like Camera), AVAudioSession
         // will send us a real 'audioInterruptionBegan' event, which we already handle.
         // By removing this, we fix the issue where minimizing the app kills the stream unnecessarily.
+    }
+
+    public func applicationWillResignActive() {
+        print("📱 Application Will Resign Active")
+        DiagnosticsStore.append("UIApplication willResignActive streamState=\(stateMachine.currentState.rawValue)")
+    }
+
+    public func applicationWillEnterForeground() {
+        print("📱 Application Will Enter Foreground")
+        DiagnosticsStore.append("UIApplication willEnterForeground streamState=\(stateMachine.currentState.rawValue)")
+    }
+
+    public func applicationWillTerminate() {
+        print("📱 Application Will Terminate")
+        DiagnosticsStore.append("UIApplication willTerminate streamState=\(stateMachine.currentState.rawValue)")
+        DiagnosticsStore.markGracefulEnd()
+    }
+
+    public func applicationDidReceiveMemoryWarning() {
+        print("📱 Application Did Receive Memory Warning")
+        DiagnosticsStore.append("UIApplication didReceiveMemoryWarning streamState=\(stateMachine.currentState.rawValue) appState=\(UIApplication.shared.applicationState.rawValue)")
+
+        if stateMachine.currentState == .streaming || stateMachine.currentState == .connecting || stateMachine.currentState == .reconnecting {
+            beginInterruption(source: .systemResource)
+        }
+    }
+
+    public func audioRouteChanged(reasonRawValue: UInt) {
+        print("🎧 Audio Route Changed reason=\(reasonRawValue)")
+        DiagnosticsStore.append("AVAudioSession routeChange reason=\(reasonRawValue) appState=\(UIApplication.shared.applicationState.rawValue) streamState=\(stateMachine.currentState.rawValue)")
     }
 }
