@@ -29,8 +29,6 @@ class RtmpService: RtmpServiceProtocol {
     // Audio State
     private let audioQueue = DispatchQueue(label: "com.audiostreaming.audio", qos: .userInitiated)
     private var isAudioAttached = false
-    private var isConfiguringAudio = false
-    private let audioLock = NSLock()
     
     // Configuration
     var bitrate: Int = 32 * 1000
@@ -108,35 +106,19 @@ class RtmpService: RtmpServiceProtocol {
     // MARK: - Audio Attachment Logic (Moved from AudioStreaming)
     
     func attachAudio(completion: @escaping (Bool, Error?) -> Void) {
-        audioLock.lock()
-        
-        guard !isConfiguringAudio else {
-            audioLock.unlock()
-            print("⚠️ RtmpService: Audio configuration already in progress")
-            DispatchQueue.main.async {
-                completion(false, NSError(domain: "RtmpService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Audio configuration in progress"]))
-            }
-            return
-        }
-        
-        guard !isAudioAttached else {
-            audioLock.unlock()
-            print("⚠️ RtmpService: Audio already attached")
-            DispatchQueue.main.async { completion(true, nil) }
-            return
-        }
-        
-        isConfiguringAudio = true
-        audioLock.unlock()
-        
         audioQueue.async { [weak self] in
             guard let self = self else {
                 DispatchQueue.main.async { completion(false, nil) }
                 return
             }
             
+            if self.isAudioAttached {
+                print("⚠️ RtmpService: Audio already attached")
+                DispatchQueue.main.async { completion(true, nil) }
+                return
+            }
+            
             guard let audioDevice = AVCaptureDevice.default(for: AVMediaType.audio) else {
-                self.unlockConfig()
                 let error = NSError(domain: "RtmpService", code: -2, userInfo: [NSLocalizedDescriptionKey: "No audio device available"])
                 DispatchQueue.main.async { completion(false, error) }
                 return
@@ -144,12 +126,7 @@ class RtmpService: RtmpServiceProtocol {
             
             self.rtmpStream?.attachAudio(audioDevice)
             
-            Thread.sleep(forTimeInterval: 0.2)
-            
-            self.audioLock.lock()
             self.isAudioAttached = true
-            self.isConfiguringAudio = false
-            self.audioLock.unlock()
             
             print("✅ RtmpService: Audio attached successfully")
             DispatchQueue.main.async { completion(true, nil) }
@@ -157,46 +134,23 @@ class RtmpService: RtmpServiceProtocol {
     }
     
     func detachAudio(completion: (() -> Void)? = nil) {
-        audioLock.lock()
-        
-        guard isAudioAttached else {
-            audioLock.unlock()
-            completion?()
-            return
-        }
-        
-        while isConfiguringAudio {
-            audioLock.unlock()
-            Thread.sleep(forTimeInterval: 0.05)
-            audioLock.lock()
-        }
-        
-        isConfiguringAudio = true
-        audioLock.unlock()
-        
         audioQueue.async { [weak self] in
             guard let self = self else {
-                completion?()
+                DispatchQueue.main.async { completion?() }
+                return
+            }
+            
+            guard self.isAudioAttached else {
+                DispatchQueue.main.async { completion?() }
                 return
             }
             
             self.rtmpStream?.attachAudio(nil)
-            Thread.sleep(forTimeInterval: 0.2)
-            
-            self.audioLock.lock()
             self.isAudioAttached = false
-            self.isConfiguringAudio = false
-            self.audioLock.unlock()
             
             print("✅ RtmpService: Audio detached successfully")
-            completion?()
+            DispatchQueue.main.async { completion?() }
         }
-    }
-    
-    private func unlockConfig() {
-        audioLock.lock()
-        isConfiguringAudio = false
-        audioLock.unlock()
     }
     
     // MARK: - Event Handlers

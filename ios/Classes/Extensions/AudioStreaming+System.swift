@@ -79,4 +79,20 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
             }
         }
     }
+
+    public func applicationDidEnterBackground() {
+        print("📱 Application Did Enter Background")
+
+        guard stateMachine.currentState == .streaming ||
+                stateMachine.currentState == .connecting ||
+                stateMachine.currentState == .reconnecting else {
+            return
+        }
+
+        if interruptionManager.currentSource == .none {
+            interruptionManager.setCurrentSource(.systemResource)
+        }
+
+        handleSystemInterruptionBegan()
+    }
 }

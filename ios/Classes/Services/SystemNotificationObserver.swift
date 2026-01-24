@@ -6,6 +6,7 @@ protocol SystemNotificationObserverDelegate: AnyObject {
     func audioInterruptionBegan()
     func audioInterruptionEnded(shouldResume: Bool)
     func applicationDidBecomeActive()
+    func applicationDidEnterBackground()
 }
 
 protocol SystemNotificationObserverProtocol: AnyObject {
@@ -31,6 +32,13 @@ class SystemNotificationObserver: SystemNotificationObserverProtocol {
             self,
             selector: #selector(handleApplicationDidBecomeActive),
             name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
             object: nil
         )
     }
@@ -78,5 +86,9 @@ class SystemNotificationObserver: SystemNotificationObserverProtocol {
     
     @objc private func handleApplicationDidBecomeActive() {
         delegate?.applicationDidBecomeActive()
+    }
+    
+    @objc private func handleApplicationDidEnterBackground() {
+        delegate?.applicationDidEnterBackground()
     }
 }
