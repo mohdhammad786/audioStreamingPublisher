@@ -7,6 +7,8 @@ protocol SystemNotificationObserverDelegate: AnyObject {
     func audioInterruptionEnded(shouldResume: Bool)
     func applicationDidBecomeActive()
     func applicationDidEnterBackground()
+    func mediaServicesWereLost()
+    func mediaServicesWereReset()
 }
 
 protocol SystemNotificationObserverProtocol: AnyObject {
@@ -35,11 +37,23 @@ class SystemNotificationObserver: SystemNotificationObserverProtocol {
             object: nil
         )
         
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleApplicationDidEnterBackground),
             name: UIApplication.didEnterBackgroundNotification,
             object: nil
+        )
+        
+        // Media Services Lost/Reset
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesWereLost),
+            name: AVAudioSession.mediaServicesWereLostNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesWereReset),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: AVAudioSession.sharedInstance()
         )
     }
     
@@ -90,5 +104,15 @@ class SystemNotificationObserver: SystemNotificationObserverProtocol {
     
     @objc private func handleApplicationDidEnterBackground() {
         delegate?.applicationDidEnterBackground()
+    }
+    
+    @objc private func handleMediaServicesWereLost(_ notification: Notification) {
+        print("⚠️ AVAudioSession Media Services Were LOST")
+        delegate?.mediaServicesWereLost()
+    }
+    
+    @objc private func handleMediaServicesWereReset(_ notification: Notification) {
+        print("🔄 AVAudioSession Media Services Were RESET")
+        delegate?.mediaServicesWereReset()
     }
 }

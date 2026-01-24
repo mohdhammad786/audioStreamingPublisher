@@ -14,6 +14,51 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
              handleSystemInterruptionBegan()
         }
     }
+    
+    public func mediaServicesWereLost() {
+        print("☠️ Media Services Lost - Emergency Cleanup")
+        
+        // 1. Immediately detach audio to prevent accessing dead Core Audio objects
+        // We use the fire-and-forget approach here because the media server is gone.
+        rtmpService.detachAudio(completion: nil)
+        
+        // 2. We don't change state to FAILED yet, we wait for RESET.
+        // But we should consider ourselves interrupted.
+        if stateMachine.currentState == .streaming || stateMachine.currentState == .connecting {
+             beginInterruption(source: .systemResource)
+        }
+    }
+    
+    public func mediaServicesWereReset() {
+        print("🔄 Media Services Reset - Re-initializing Audio Engine")
+        
+        // 1. Re-configure Audio Session from scratch
+        audioSessionManager.configureAudioSession { [weak self] success, error in
+            guard let self = self else { return }
+            
+            if !success {
+                print("❌ Failed to re-configure audio session after reset: \(String(describing: error))")
+                return
+            }
+            
+            // 2. Re-attach audio to the RtmpStream
+            self.rtmpService.attachAudio { [weak self] attached, error in
+                guard let self = self else { return }
+                
+                if attached {
+                    print("✅ Audio successfully re-attached after Media Services Reset")
+                    
+                    // 3. Attempt to resume if we were interrupted
+                    if self.stateMachine.currentState == .interrupted {
+                         // We interpret the Reset as the "End" of the interruption
+                         self.endInterruption(source: .systemResource)
+                    }
+                } else {
+                    print("❌ Failed to attach audio after reset: \(String(describing: error))")
+                }
+            }
+        }
+    }
 
     public func audioInterruptionEnded(shouldResume: Bool) {
         print("🔔 System Audio Interruption Ended. Should Resume: \(shouldResume)")
