@@ -40,7 +40,10 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
     public func applicationDidBecomeActive() {
         print("📱 Application Did Become Active")
         
-        // Fix: Do NOT auto-resume if we were stopped/failed
+        // Resumption is now handled primarily by 'audioInterruptionEnded'
+        // But we keep this as a safeguard for edge cases where the OS interruption ended logic
+        // might have been missed or if we need to sync state.
+        
         // Only resume if we were in an INTERRUPTED state
         guard stateMachine.currentState == .interrupted else {
              print("📱 Active but not in INTERRUPTED state (current: \(stateMachine.currentState.description)) - Ignoring auto-resume")
@@ -82,17 +85,11 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
 
     public func applicationDidEnterBackground() {
         print("📱 Application Did Enter Background")
-
-        guard stateMachine.currentState == .streaming ||
-                stateMachine.currentState == .connecting ||
-                stateMachine.currentState == .reconnecting else {
-            return
-        }
-
-        if interruptionManager.currentSource == .none {
-            interruptionManager.setCurrentSource(.systemResource)
-        }
-
-        handleSystemInterruptionBegan()
+        
+        // CRITICAL FIX: We do NOT force an interruption here anymore.
+        // Reason: Audio Streaming apps are expected to continue in the background.
+        // If the user opens another app that uses audio (like Camera), AVAudioSession
+        // will send us a real 'audioInterruptionBegan' event, which we already handle.
+        // By removing this, we fix the issue where minimizing the app kills the stream unnecessarily.
     }
 }

@@ -4,10 +4,12 @@ import Foundation
 public struct InterruptionConfig {
     let phoneCallTimeout: TimeInterval
     let networkTimeout: TimeInterval
+    let systemTimeout: TimeInterval
 
     public static let `default` = InterruptionConfig(
         phoneCallTimeout: 30.0,
-        networkTimeout: 30.0
+        networkTimeout: 30.0,
+        systemTimeout: 30.0
     )
 }
 
@@ -190,13 +192,22 @@ public class InterruptionManagerImpl: InterruptionManager {
             // No interruptions -> Stop timer
             internalCancelTimer()
             
-        case .phoneCall, .systemResource:
-            // Infinite timeout -> Stop timer to prevent unwanted timeout
-            if interruptionTimer != nil {
-                print("⏸️ InterruptionManager: Pausing timer due to Infinite Timeout source (\(effectiveSource))")
-                internalCancelTimer()
+        case .phoneCall:
+             // Phone Call -> Use phoneCallTimeout
+            let timeout = config.phoneCallTimeout
+             if interruptionTimer == nil {
+                 print("⏸️ InterruptionManager: Starting timer for Phone Call (\(timeout)s)")
+                 startTimer(for: .phoneCall, timeout: timeout)
+             }
+             
+        case .systemResource:
+            // System Resource (e.g. Camera) -> Use systemTimeout
+            let timeout = config.systemTimeout
+            if interruptionTimer == nil {
+                print("⏸️ InterruptionManager: Starting timer for System Resource (\(timeout)s)")
+                startTimer(for: .systemResource, timeout: timeout)
             }
-            
+
         case .network:
             // Finite timeout -> Ensure timer is running
             let timeout = config.networkTimeout
