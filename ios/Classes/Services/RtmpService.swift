@@ -28,8 +28,7 @@ class RtmpService: RtmpServiceProtocol {
     weak var delegate: RtmpServiceDelegate?
     private let myDelegate = AudioStreamingQoSDelegate() // Assuming this exists or needs to be moved/shared
     
-    // Audio State
-    private let audioQueue = DispatchQueue(label: "com.audiostreaming.audio", qos: .userInitiated)
+    private let operationQueue = DispatchQueue(label: "com.audiostreaming.rtmp", qos: .userInitiated)
     private var isAudioAttached = false
     
     // Configuration
@@ -40,7 +39,9 @@ class RtmpService: RtmpServiceProtocol {
     // MARK: - Init
     init(delegate: RtmpServiceDelegate? = nil) {
         self.delegate = delegate
-        initializeHaishinKit()
+        operationQueue.sync {
+            initializeHaishinKit()
+        }
     }
     
     private func initializeHaishinKit() {
@@ -77,45 +78,58 @@ class RtmpService: RtmpServiceProtocol {
     // MARK: - Public Methods
     
     func connect(url: String) {
-        rtmpConnection?.connect(url)
+        operationQueue.async { [weak self] in
+            self?.rtmpConnection?.connect(url)
+        }
     }
     
     func publish(_ name: String) {
-        rtmpStream?.publish(name)
+        operationQueue.async { [weak self] in
+            self?.rtmpStream?.publish(name)
+        }
     }
     
     func close() {
-        rtmpConnection?.close()
+        operationQueue.async { [weak self] in
+            self?.rtmpConnection?.close()
+        }
     }
     
     func mute() {
-        rtmpStream?.audioSettings[.muted] = true
+        operationQueue.async { [weak self] in
+            self?.rtmpStream?.audioSettings[.muted] = true
+        }
     }
     
     func unmute() {
-        rtmpStream?.audioSettings[.muted] = false
+        operationQueue.async { [weak self] in
+            self?.rtmpStream?.audioSettings[.muted] = false
+        }
     }
     
     func updateSettings(bitrate: Int?, sampleRate: Int?, isStereo: Bool?) {
-        if let bitrate = bitrate { self.bitrate = bitrate }
-        if let sampleRate = sampleRate { self.sampleRate = Double(sampleRate) }
-        if let isStereo = isStereo { self.isStereo = isStereo }
-        
-        guard let stream = rtmpStream else { return }
-        
-        stream.audioSettings = [
-            .muted: false,
-            .bitrate: self.bitrate,
-        ]
-        
-        stream.recorderSettings = [
-            AVMediaType.audio: [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: self.sampleRate,
-                AVNumberOfChannelsKey: self.isStereo ? 2 : 1,
-            ],
-        ]
-        print("✅ RtmpService: Audio settings updated: Bitrate=\(self.bitrate), SampleRate=\(self.sampleRate), Stereo=\(self.isStereo)")
+        operationQueue.async { [weak self] in
+            guard let self = self else { return }
+            if let bitrate = bitrate { self.bitrate = bitrate }
+            if let sampleRate = sampleRate { self.sampleRate = Double(sampleRate) }
+            if let isStereo = isStereo { self.isStereo = isStereo }
+            
+            guard let stream = self.rtmpStream else { return }
+            
+            stream.audioSettings = [
+                .muted: false,
+                .bitrate: self.bitrate,
+            ]
+            
+            stream.recorderSettings = [
+                AVMediaType.audio: [
+                    AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                    AVSampleRateKey: self.sampleRate,
+                    AVNumberOfChannelsKey: self.isStereo ? 2 : 1,
+                ],
+            ]
+            print("✅ RtmpService: Audio settings updated: Bitrate=\(self.bitrate), SampleRate=\(self.sampleRate), Stereo=\(self.isStereo)")
+        }
     }
     
     // MARK: - Lifecycle Management (Media Services)
@@ -124,30 +138,31 @@ class RtmpService: RtmpServiceProtocol {
         // CRITICAL: Forcefully release references WITHOUT calling cleanup methods.
         // When Media Services are lost, the underlying C++ objects are already dead.
         // Calling methods on them (like .close() or .dispose()) causes a crash.
-        print("☠️ RtmpService: Force releasing HaishinKit objects")
-        
-        // Remove listeners first to avoid callbacks on dead objects
-        removeListeners()
-        
-        // Nullify references - This releases the Swift wrappers.
-        // We rely on ARC to deallocate them. We do NOT call dispose().
-        rtmpStream = nil
-        rtmpConnection = nil
-        isAudioAttached = false
+        operationQueue.async { [weak self] in
+            guard let self = self else { return }
+            print("☠️ RtmpService: Force releasing HaishinKit objects")
+            self.removeListeners()
+            self.rtmpStream?.delegate = nil
+            self.rtmpStream = nil
+            self.rtmpConnection = nil
+            self.isAudioAttached = false
+        }
     }
     
     func reinitialize() {
-        print("🔄 RtmpService: Re-initializing HaishinKit objects")
-        initializeHaishinKit()
-        
-        // Re-apply settings
-        updateSettings(bitrate: self.bitrate, sampleRate: Int(self.sampleRate), isStereo: self.isStereo)
+        operationQueue.async { [weak self] in
+            guard let self = self else { return }
+            print("🔄 RtmpService: Re-initializing HaishinKit objects")
+            self.initializeHaishinKit()
+            
+            self.updateSettings(bitrate: self.bitrate, sampleRate: Int(self.sampleRate), isStereo: self.isStereo)
+        }
     }
     
     // MARK: - Audio Attachment Logic (Moved from AudioStreaming)
     
     func attachAudio(completion: @escaping (Bool, Error?) -> Void) {
-        audioQueue.async { [weak self] in
+        operationQueue.async { [weak self] in
             guard let self = self else {
                 DispatchQueue.main.async { completion(false, nil) }
                 return
@@ -175,7 +190,7 @@ class RtmpService: RtmpServiceProtocol {
     }
     
     func detachAudio(completion: (() -> Void)? = nil) {
-        audioQueue.async { [weak self] in
+        operationQueue.async { [weak self] in
             guard let self = self else {
                 DispatchQueue.main.async { completion?() }
                 return

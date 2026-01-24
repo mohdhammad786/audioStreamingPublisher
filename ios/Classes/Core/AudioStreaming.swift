@@ -346,20 +346,21 @@ public class AudioStreaming {
 
         StreamingContext.persistInterruptionBegan(source: source)
 
-        // Safe cleanup via service
-        rtmpService.detachAudio { [weak self] in
-            guard let self = self else { return }
-            
-            DispatchQueue.main.async {
-                self.rtmpService.close()
-                self.audioSessionManager.deactivateAudioSession()
-
-                if source == .systemResource {
-                    self.stateLock.lock()
-                    self.streamingContext.requiresRtmpReinitialize = true
-                    self.stateLock.unlock()
-                    DiagnosticsStore.append("beginInterruption systemResource forceRelease")
-                    self.rtmpService.forceRelease()
+        if source == .systemResource {
+            stateLock.lock()
+            streamingContext.requiresRtmpReinitialize = true
+            stateLock.unlock()
+            DiagnosticsStore.append("beginInterruption systemResource forceRelease only (skip detachAudio)")
+            rtmpService.forceRelease()
+            audioSessionManager.deactivateAudioSession()
+        } else {
+            // Safe cleanup via service
+            rtmpService.detachAudio { [weak self] in
+                guard let self = self else { return }
+                
+                DispatchQueue.main.async {
+                    self.rtmpService.close()
+                    self.audioSessionManager.deactivateAudioSession()
                 }
             }
         }
