@@ -212,11 +212,12 @@ public class AudioStreaming {
         StreamingContext.clearPersistedInterruption()
         interruptionManager.clearAllInterruptions()
         networkMonitor.stopMonitoring()
+        reconnectionManager.cancelReconnection()
         phoneMonitor.stopMonitoring()
         notificationObserver.stopObserving()
         
         // Synchronous cleanup attempt (simplified for service)
-        rtmpService.detachAudio(completion: nil)
+        rtmpService.shutdownForInterruption()
         audioSessionManager.deactivateAudioSession()
     }
 

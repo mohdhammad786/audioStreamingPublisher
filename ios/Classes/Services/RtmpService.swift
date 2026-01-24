@@ -93,7 +93,7 @@ class RtmpService: RtmpServiceProtocol {
     }
 
     func shutdownForInterruption() {
-        operationQueue.async { [weak self] in
+        operationQueue.sync { [weak self] in
             guard let self = self else { return }
             self.shutdownForInterruptionInternal()
         }

@@ -35,6 +35,11 @@ public class SwiftFlutterAudioStreamingPlugin: NSObject, FlutterPlugin {
         }
         result(nil)
     case "initializeStreaming":
+        if let existing = audioStreaming {
+            existing.dispose()
+            audioStreaming = nil
+        }
+        
         // Using DependencyFactory for centralized dependency injection
         let factory = DependencyFactory()
         audioStreaming = factory.createAudioStreaming()
@@ -60,6 +65,7 @@ public class SwiftFlutterAudioStreamingPlugin: NSObject, FlutterPlugin {
         result(nil)
     case "disposeStreaming":
         audioStreaming?.dispose()
+        audioStreaming = nil
         result(nil)
     case "muteStreaming":
         audioStreaming?.mute()
