@@ -37,6 +37,9 @@ class SystemNotificationObserver: SystemNotificationObserverProtocol {
             object: nil
         )
         
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationDidEnterBackground),
             name: UIApplication.didEnterBackgroundNotification,
             object: nil
         )
