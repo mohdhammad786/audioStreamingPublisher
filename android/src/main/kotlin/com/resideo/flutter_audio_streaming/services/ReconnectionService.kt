@@ -55,8 +55,8 @@ class ReconnectionService(
             try {
                 Log.d(TAG, "Starting reconnection sequence on Main Thread...")
 
-                // 1. Ensure clean slate
-                try { stopStream() } catch (e: Exception) {}
+                // 1. Ensure clean slate (Stop RTMP only, don't reset full state)
+                try { client.stopStream() } catch (e: Exception) {}
 
                 // 2. Force Audio Prepare (Re-initializes buffers/encoders)
                 val prepared = prepareStream()
