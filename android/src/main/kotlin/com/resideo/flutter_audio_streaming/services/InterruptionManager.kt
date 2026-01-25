@@ -130,9 +130,11 @@ class InterruptionManager(
         Log.i(TAG, "🔄 UpdateState: Effective Source = $effectiveSource")
         
         // 2. Update Context
-        if (effectiveSource != InterruptionSource.NONE) {
-            context.currentInterruptionSource = effectiveSource
+        if (effectiveSource == InterruptionSource.NONE && context.currentInterruptionSource != InterruptionSource.NONE) {
+             // We are clearing the interruption, save it for the event mapper
+             context.reconnectionSource = context.currentInterruptionSource
         }
+        context.currentInterruptionSource = effectiveSource
 
         // 3. Handle Transitions
         if (effectiveSource != InterruptionSource.NONE) {
@@ -307,6 +309,7 @@ class InterruptionManager(
             cancelInterruptionTimeout()
             interruptions.clear()
             context.currentInterruptionSource = InterruptionSource.NONE
+            context.reconnectionSource = InterruptionSource.NONE
             Log.i(TAG, "Reset - Cleared all interruptions")
         }
     }

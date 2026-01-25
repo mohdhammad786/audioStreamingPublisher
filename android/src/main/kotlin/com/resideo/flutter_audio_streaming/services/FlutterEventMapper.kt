@@ -16,12 +16,12 @@ class FlutterEventMapper(
         when (newState) {
             StreamState.STREAMING -> {
                 if (event == StreamEvent.ReconnectionSuccess) {
-                    val eventType = when (streamingContext.currentInterruptionSource) {
+                    val eventType = when (streamingContext.reconnectionSource) {
                         InterruptionSource.NETWORK -> DartMessenger.EventType.NETWORK_RESUMED
                         else -> DartMessenger.EventType.AUDIO_RESUMED
                     }
                     dartMessenger?.send(eventType, "Stream resumed successfully")
-                    streamingContext.currentInterruptionSource = InterruptionSource.NONE
+                    streamingContext.reconnectionSource = InterruptionSource.NONE
                 } else if (event == StreamEvent.StartSuccess) {
                     dartMessenger?.send(DartMessenger.EventType.RTMP_STARTED, "Connection success")
                 }
