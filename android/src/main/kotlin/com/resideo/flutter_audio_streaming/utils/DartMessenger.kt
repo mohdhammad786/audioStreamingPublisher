@@ -1,5 +1,7 @@
 package com.resideo.flutter_audio_streaming.utils
 
+import android.os.Handler
+import android.os.Looper
 import android.text.TextUtils
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
@@ -8,6 +10,7 @@ import java.util.*
 
 class DartMessenger(messenger: BinaryMessenger, id: String) {
     private var eventSink: EventSink? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     enum class EventType {
         ERROR, CAMERA_CLOSING, RTMP_STOPPED, RTMP_STARTED, ROTATION_UPDATE,
@@ -16,23 +19,22 @@ class DartMessenger(messenger: BinaryMessenger, id: String) {
     }
 
     fun send(eventType: EventType, description: String?) {
-        if (eventSink == null) {
-            return
-        }
         val event: MutableMap<String, String?> = HashMap()
-        // Fixed deprecated toLowerCase() usage
         event["eventType"] = eventType.toString().lowercase(Locale.ROOT)
-        // Only errors have a description.
         if (!TextUtils.isEmpty(description)) {
             event["errorDescription"] = description
         }
-        eventSink!!.success(event)
+        val sink = eventSink ?: return
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            sink.success(event)
+            return
+        }
+        mainHandler.post {
+            eventSink?.success(event)
+        }
     }
     
     fun send(eventType: EventType, description: String?, extras: Map<String, Any?>?) {
-        if (eventSink == null) {
-            return
-        }
         val event: MutableMap<String, Any?> = HashMap()
         event["eventType"] = eventType.toString().lowercase(Locale.ROOT)
         if (!TextUtils.isEmpty(description)) {
@@ -43,7 +45,14 @@ class DartMessenger(messenger: BinaryMessenger, id: String) {
                 event[k] = v
             }
         }
-        eventSink!!.success(event)
+        val sink = eventSink ?: return
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            sink.success(event)
+            return
+        }
+        mainHandler.post {
+            eventSink?.success(event)
+        }
     }
 
     init {

@@ -144,10 +144,18 @@ class NetworkMonitor(
 
             if (isAvailable) {
                 Log.i(TAG, "🌐 Network Available")
-                mediator.onNetworkAvailable()
+                if (::mediator.isInitialized) {
+                    mediator.onNetworkAvailable()
+                } else {
+                    Log.w(TAG, "Mediator not initialized; ignoring network available")
+                }
             } else {
                 Log.i(TAG, "❌ Network Lost")
-                mediator.onNetworkLost()
+                if (::mediator.isInitialized) {
+                    mediator.onNetworkLost()
+                } else {
+                    Log.w(TAG, "Mediator not initialized; ignoring network lost")
+                }
             }
 
             pendingNetworkEvent = null

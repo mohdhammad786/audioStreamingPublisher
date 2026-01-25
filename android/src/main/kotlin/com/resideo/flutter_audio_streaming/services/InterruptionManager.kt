@@ -78,6 +78,10 @@ class InterruptionManager(
 
     // Common Interruption Handlers (Internal)
     private fun handleInterruptionBeganInternal(source: InterruptionSource) {
+        if (!::delegate.isInitialized) {
+            Log.w(TAG, "Delegate not initialized; ignoring interruption began: $source")
+            return
+        }
         synchronized(lock) {
             val interruption = when (source) {
                 InterruptionSource.PHONE_CALL -> PhoneCallInterruption()
@@ -98,6 +102,10 @@ class InterruptionManager(
     }
 
     private fun handleInterruptionEndedInternal(source: InterruptionSource) {
+        if (!::delegate.isInitialized) {
+            Log.w(TAG, "Delegate not initialized; ignoring interruption ended: $source")
+            return
+        }
         synchronized(lock) {
             val removed = interruptions.removeIf { it.source == source }
             if (removed) {
@@ -127,12 +135,23 @@ class InterruptionManager(
         // 3. Handle Transitions
         if (effectiveSource != InterruptionSource.NONE) {
             if (delegate.getStreamState() != StreamState.INTERRUPTED) {
-                val transitioned = delegate.transitionTo(StreamEvent.InterruptionBegan)
-                if (transitioned) {
-                    delegate.stopStreamForInterruption()
-                    delegate.abandonAudioFocus()
-                    // Send Event
-                    sendInterruptionEvent(effectiveSource)
+                try {
+                    val transitioned = delegate.transitionTo(StreamEvent.InterruptionBegan)
+                    if (transitioned) {
+                        try {
+                            delegate.stopStreamForInterruption()
+                        } catch (e: Throwable) {
+                            Log.e(TAG, "Error stopping stream for interruption: ${e.message}")
+                        }
+                        try {
+                            delegate.abandonAudioFocus()
+                        } catch (e: Throwable) {
+                            Log.e(TAG, "Error abandoning audio focus: ${e.message}")
+                        }
+                        sendInterruptionEvent(effectiveSource)
+                    }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Error handling interruption began: ${e.message}")
                 }
             }
         } else {

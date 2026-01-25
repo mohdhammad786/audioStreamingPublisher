@@ -292,7 +292,7 @@ class AudioStreaming(
         try {
             rtmpAudio.stopStream()
             Log.d(TAG, "Stream stopped for interruption")
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Error stopping stream: ${e.message}")
         }
     }
