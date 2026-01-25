@@ -111,6 +111,12 @@ extension StreamingContext {
 
 struct DiagnosticsStore {
     private static let defaults = UserDefaults.standard
+    private static let loggingQueue = DispatchQueue(label: "com.resideo.flutter_audio_streaming.diagnostics.queue", qos: .utility)
+    
+    private static let dateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        return formatter
+    }()
 
     private static let keySessionId = "com.resideo.flutter_audio_streaming.diagnostics.sessionId"
     private static let keySessionStartedAt = "com.resideo.flutter_audio_streaming.diagnostics.sessionStartedAt"
@@ -125,84 +131,97 @@ struct DiagnosticsStore {
 
     static func beginSession() -> [String: Any] {
         DiagnosticsCrashHandler.installIfNeeded()
+        
+        return loggingQueue.sync {
+            let now = Date().timeIntervalSince1970
+            let prevSessionId = defaults.string(forKey: keySessionId)
+            let prevStartedAt = defaults.double(forKey: keySessionStartedAt)
+            let prevHeartbeatAt = defaults.double(forKey: keyLastHeartbeatAt)
+            let prevGracefulEndAt = defaults.double(forKey: keyLastGracefulEndAt)
+            let prevState = defaults.string(forKey: keyLastKnownState)
+            let prevCrashAt = defaults.double(forKey: keyLastCrashAt)
+            let prevCrashType = defaults.string(forKey: keyLastCrashType)
+            let prevCrashReason = defaults.string(forKey: keyLastCrashReason)
+            let prevCrashCallStack = defaults.array(forKey: keyLastCrashCallStack) as? [String]
 
-        let now = Date().timeIntervalSince1970
-        let prevSessionId = defaults.string(forKey: keySessionId)
-        let prevStartedAt = defaults.double(forKey: keySessionStartedAt)
-        let prevHeartbeatAt = defaults.double(forKey: keyLastHeartbeatAt)
-        let prevGracefulEndAt = defaults.double(forKey: keyLastGracefulEndAt)
-        let prevState = defaults.string(forKey: keyLastKnownState)
-        let prevCrashAt = defaults.double(forKey: keyLastCrashAt)
-        let prevCrashType = defaults.string(forKey: keyLastCrashType)
-        let prevCrashReason = defaults.string(forKey: keyLastCrashReason)
-        let prevCrashCallStack = defaults.array(forKey: keyLastCrashCallStack) as? [String]
+            let hadPreviousSession = (prevSessionId != nil && prevStartedAt > 0)
+            let previousEndedGracefully = (prevGracefulEndAt > 0 && prevGracefulEndAt >= prevHeartbeatAt)
+            let previousLikelyUnexpected = hadPreviousSession && !previousEndedGracefully && prevHeartbeatAt > 0 && (now - prevHeartbeatAt) < 3600
 
-        let hadPreviousSession = (prevSessionId != nil && prevStartedAt > 0)
-        let previousEndedGracefully = (prevGracefulEndAt > 0 && prevGracefulEndAt >= prevHeartbeatAt)
-        let previousLikelyUnexpected = hadPreviousSession && !previousEndedGracefully && prevHeartbeatAt > 0 && (now - prevHeartbeatAt) < 3600
+            let newSessionId = UUID().uuidString
+            defaults.set(newSessionId, forKey: keySessionId)
+            defaults.set(now, forKey: keySessionStartedAt)
+            defaults.set(now, forKey: keyLastHeartbeatAt)
+            defaults.removeObject(forKey: keyLastGracefulEndAt)
+            defaults.removeObject(forKey: keyLastCrashAt)
+            defaults.removeObject(forKey: keyLastCrashType)
+            defaults.removeObject(forKey: keyLastCrashReason)
+            defaults.removeObject(forKey: keyLastCrashCallStack)
 
-        let newSessionId = UUID().uuidString
-        defaults.set(newSessionId, forKey: keySessionId)
-        defaults.set(now, forKey: keySessionStartedAt)
-        defaults.set(now, forKey: keyLastHeartbeatAt)
-        defaults.removeObject(forKey: keyLastGracefulEndAt)
-        defaults.removeObject(forKey: keyLastCrashAt)
-        defaults.removeObject(forKey: keyLastCrashType)
-        defaults.removeObject(forKey: keyLastCrashReason)
-        defaults.removeObject(forKey: keyLastCrashCallStack)
-
-        let info: [String: Any] = [
-            "previousSessionId": prevSessionId as Any,
-            "previousStartedAt": prevStartedAt,
-            "previousLastHeartbeatAt": prevHeartbeatAt,
-            "previousLastGracefulEndAt": prevGracefulEndAt,
-            "previousLastKnownState": prevState as Any,
-            "previousCrashAt": prevCrashAt > 0 ? prevCrashAt : NSNull(),
-            "previousCrashType": prevCrashType as Any,
-            "previousCrashReason": prevCrashReason as Any,
-            "previousCrashCallStack": prevCrashCallStack as Any,
-            "previousLikelyUnexpectedTermination": previousLikelyUnexpected,
-            "currentSessionId": newSessionId,
-            "currentSessionStartedAt": now
-        ]
-        return info
+            let info: [String: Any] = [
+                "previousSessionId": prevSessionId as Any,
+                "previousStartedAt": prevStartedAt,
+                "previousLastHeartbeatAt": prevHeartbeatAt,
+                "previousLastGracefulEndAt": prevGracefulEndAt,
+                "previousLastKnownState": prevState as Any,
+                "previousCrashAt": prevCrashAt > 0 ? prevCrashAt : NSNull(),
+                "previousCrashType": prevCrashType as Any,
+                "previousCrashReason": prevCrashReason as Any,
+                "previousCrashCallStack": prevCrashCallStack as Any,
+                "previousLikelyUnexpectedTermination": previousLikelyUnexpected,
+                "currentSessionId": newSessionId,
+                "currentSessionStartedAt": now
+            ]
+            return info
+        }
     }
 
     static func markGracefulEnd() {
-        let now = Date().timeIntervalSince1970
-        defaults.set(now, forKey: keyLastGracefulEndAt)
-        defaults.set(now, forKey: keyLastHeartbeatAt)
+        loggingQueue.async {
+            let now = Date().timeIntervalSince1970
+            defaults.set(now, forKey: keyLastGracefulEndAt)
+            defaults.set(now, forKey: keyLastHeartbeatAt)
+        }
     }
 
     static func setLastKnownState(_ state: String) {
-        defaults.set(state, forKey: keyLastKnownState)
-        defaults.set(Date().timeIntervalSince1970, forKey: keyLastHeartbeatAt)
+        loggingQueue.async {
+            defaults.set(state, forKey: keyLastKnownState)
+            defaults.set(Date().timeIntervalSince1970, forKey: keyLastHeartbeatAt)
+        }
     }
 
     static func heartbeat() {
-        defaults.set(Date().timeIntervalSince1970, forKey: keyLastHeartbeatAt)
+        loggingQueue.async {
+            defaults.set(Date().timeIntervalSince1970, forKey: keyLastHeartbeatAt)
+        }
     }
 
     static func append(_ message: String) {
-        let now = ISO8601DateFormatter().string(from: Date())
-        let sessionId = defaults.string(forKey: keySessionId) ?? "unknown"
-        let line = "\(now) | \(sessionId) | \(message)"
+        loggingQueue.async {
+            let now = dateFormatter.string(from: Date())
+            let sessionId = defaults.string(forKey: keySessionId) ?? "unknown"
+            let line = "\(now) | \(sessionId) | \(message)"
 
-        let existing = (defaults.array(forKey: keyLogLines) as? [String]) ?? []
-        var updated = existing
-        updated.append(line)
-        if updated.count > 300 {
-            updated.removeFirst(updated.count - 300)
+            let existing = (defaults.array(forKey: keyLogLines) as? [String]) ?? []
+            var updated = existing
+            updated.append(line)
+            if updated.count > 300 {
+                updated.removeFirst(updated.count - 300)
+            }
+            defaults.set(updated, forKey: keyLogLines)
+            defaults.set(Date().timeIntervalSince1970, forKey: keyLastHeartbeatAt)
         }
-        defaults.set(updated, forKey: keyLogLines)
-        defaults.set(Date().timeIntervalSince1970, forKey: keyLastHeartbeatAt)
     }
 
     static func readLines() -> [String] {
-        return (defaults.array(forKey: keyLogLines) as? [String]) ?? []
+        return loggingQueue.sync {
+            (defaults.array(forKey: keyLogLines) as? [String]) ?? []
+        }
     }
 
     fileprivate static func recordCrash(type: String, reason: String?, callStack: [String]?) {
+        // Crash recording happens on the main thread/crashed thread and shouldn't dispatch to queue to avoid deadlocks
         let now = Date().timeIntervalSince1970
         defaults.set(now, forKey: keyLastCrashAt)
         defaults.set(type, forKey: keyLastCrashType)
@@ -213,6 +232,8 @@ struct DiagnosticsStore {
             defaults.removeObject(forKey: keyLastCrashCallStack)
         }
         defaults.set(now, forKey: keyLastHeartbeatAt)
+        // Attempt to sync immediately
+        defaults.synchronize() 
     }
 }
 
