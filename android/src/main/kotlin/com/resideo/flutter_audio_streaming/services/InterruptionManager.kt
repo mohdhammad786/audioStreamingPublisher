@@ -130,7 +130,9 @@ class InterruptionManager(
         Log.i(TAG, "🔄 UpdateState: Effective Source = $effectiveSource")
         
         // 2. Update Context
-        context.currentInterruptionSource = effectiveSource
+        if (effectiveSource != InterruptionSource.NONE) {
+            context.currentInterruptionSource = effectiveSource
+        }
 
         // 3. Handle Transitions
         if (effectiveSource != InterruptionSource.NONE) {
