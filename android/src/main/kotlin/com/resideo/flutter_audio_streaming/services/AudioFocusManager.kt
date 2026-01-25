@@ -63,6 +63,10 @@ class AudioFocusManager(
     }
 
     override fun onAudioFocusChange(focusChange: Int) {
+        if (!::mediator.isInitialized) {
+            Log.w(TAG, "Mediator not initialized, ignoring audio focus change")
+            return
+        }
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 Log.d(TAG, "Audio Focus Lost (Permanent)")

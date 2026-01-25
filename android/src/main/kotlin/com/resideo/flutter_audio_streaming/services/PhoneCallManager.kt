@@ -107,6 +107,11 @@ class PhoneCallManager(
         }
         Log.i(TAG, "Call State Changed: $stateStr")
 
+        if (!::mediator.isInitialized) {
+            Log.w(TAG, "Mediator not initialized, ignoring call state change")
+            return
+        }
+
         when (state) {
             TelephonyManager.CALL_STATE_RINGING,
             TelephonyManager.CALL_STATE_OFFHOOK -> {
