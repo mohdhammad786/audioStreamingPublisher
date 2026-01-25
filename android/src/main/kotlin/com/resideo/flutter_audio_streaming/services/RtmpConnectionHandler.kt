@@ -33,14 +33,24 @@ class RtmpConnectionHandler(
 
     override fun onConnectionSuccessRtmp() {
         Log.i(TAG, "✅ RTMP Connection Successful")
+        mediator.runOnMainThread {
+            val currentState = mediator.getStreamState()
+            val clientIsStreaming = client?.isStreaming == true
 
-        val currentState = mediator.getStreamState()
-        val wasReconnecting = (currentState == StreamState.RECONNECTING || currentState == StreamState.INTERRUPTED)
-        
-        if (wasReconnecting) {
-            mediator.transitionTo(StreamEvent.ReconnectionSuccess)
-        } else {
-            mediator.transitionTo(StreamEvent.StartSuccess)
+            if (currentState == StreamState.IDLE) {
+                if (!clientIsStreaming) return@runOnMainThread
+                mediator.transitionTo(StreamEvent.StartRequested)
+            }
+
+            val stateForDecision = mediator.getStreamState()
+            val wasReconnecting =
+                (stateForDecision == StreamState.RECONNECTING || stateForDecision == StreamState.INTERRUPTED)
+
+            if (wasReconnecting) {
+                mediator.transitionTo(StreamEvent.ReconnectionSuccess)
+            } else {
+                mediator.transitionTo(StreamEvent.StartSuccess)
+            }
         }
     }
 

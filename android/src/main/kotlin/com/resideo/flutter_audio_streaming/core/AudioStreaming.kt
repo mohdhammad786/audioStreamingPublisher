@@ -184,10 +184,8 @@ class AudioStreaming(
         try {
             if (!rtmpAudio.isStreaming) {
                 if (prepareInternal()) {
+                    transitionTo(StreamEvent.StartRequested)
                     rtmpAudio.startStream(url)
-                    
-                    // Update State first
-                    transitionTo(StreamEvent.StartRequested) 
                     
                     // Reset Interruption Flags for clean start
                     interruptionManager.reset()
