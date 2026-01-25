@@ -22,6 +22,7 @@ class StreamingController extends ValueNotifier<AudioValue> {
   final StreamingBaseChannel channel = StreamingChannel();
 
   bool _isDisposed = false;
+  bool _isStopping = false;
   StreamSubscription<dynamic>? _eventSubscription;
   Completer<void>? _creatingCompleter;
 
@@ -84,6 +85,7 @@ class StreamingController extends ValueNotifier<AudioValue> {
         value = value.copyWith(event: uniEvent);
         break;
       case 'rtmp_stopped':
+        _isStopping = false;
         value = value.copyWith(isStreaming: false, event: uniEvent);
         break;
       case 'audio_interrupted':
@@ -178,12 +180,20 @@ class StreamingController extends ValueNotifier<AudioValue> {
         'stopAudioStreaming was called on uninitialized AudioController',
       );
     }
+    if (_isStopping) {
+      return;
+    }
+    _isStopping = true;
     // Allow stop even if not streaming to ensure cleanup
     try {
-      value = value.copyWith(isStreaming: false);
+      if (value.isStreaming == true) {
+        value = value.copyWith(isStreaming: false);
+      }
       await channel.stopStreaming();
     } on PlatformException catch (e) {
       throw AudioStreamingException(e.code, e.message);
+    } finally {
+      _isStopping = false;
     }
   }
 

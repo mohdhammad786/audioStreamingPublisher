@@ -177,12 +177,6 @@ extension AudioStreaming: SystemNotificationObserverDelegate {
     public func applicationDidEnterBackground() {
         print("📱 Application Did Enter Background")
         DiagnosticsStore.append("UIApplication didEnterBackground streamState=\(stateMachine.currentState.rawValue)")
-        
-        // CRITICAL FIX: We do NOT force an interruption here anymore.
-        // Reason: Audio Streaming apps are expected to continue in the background.
-        // If the user opens another app that uses audio (like Camera), AVAudioSession
-        // will send us a real 'audioInterruptionBegan' event, which we already handle.
-        // By removing this, we fix the issue where minimizing the app kills the stream unnecessarily.
     }
 
     public func applicationWillResignActive() {

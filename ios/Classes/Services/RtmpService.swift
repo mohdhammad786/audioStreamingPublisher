@@ -195,11 +195,14 @@ class RtmpService: RtmpServiceProtocol {
                 DispatchQueue.main.async { completion(false, error) }
                 return
             }
-            
-            self.rtmpStream?.attachAudio(audioDevice)
-            
-            self.isAudioAttached = true
-            
+
+            autoreleasepool {
+                self.rtmpStream?.attachAudio(nil)
+                self.isAudioAttached = false
+                self.rtmpStream?.attachAudio(audioDevice)
+                self.isAudioAttached = true
+            }
+
             print("✅ RtmpService: Audio attached successfully")
             DispatchQueue.main.async { completion(true, nil) }
         }
