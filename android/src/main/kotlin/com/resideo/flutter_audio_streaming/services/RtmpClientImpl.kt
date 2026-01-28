@@ -43,25 +43,25 @@ class RtmpClientImpl(
         noiseSuppressor: Boolean
     ): Boolean {
         try {
-            val voiceCommSource = AudioRecordSource(context).apply {
-                audioSource = MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            // Use MIC directly for stability and background compatibility.
+            // VOICE_COMMUNICATION caused issues with background recording and potential crashes.
+            val micSource = AudioRecordSource(context).apply {
+                audioSource = MediaRecorder.AudioSource.MIC
             }
-            val attachResult = runBlocking { mixer.attachAudio(0, voiceCommSource) }
+            
+            val attachResult = runBlocking { mixer.attachAudio(0, micSource) }
+            
             if (attachResult.isFailure) {
-                Log.w("RtmpClientImpl", "VOICE_COMMUNICATION attach failed, falling back to MIC")
-                val micSource = AudioRecordSource(context).apply {
-                    audioSource = MediaRecorder.AudioSource.MIC
-                }
-                val fallbackResult = runBlocking { mixer.attachAudio(0, micSource) }
-                if (fallbackResult.isFailure) return false
-                audioSource = micSource
-            } else {
-                audioSource = voiceCommSource
+                Log.e("RtmpClientImpl", "Failed to attach MIC source: ${attachResult.exceptionOrNull()}")
+                return false
             }
+            
+            audioSource = micSource
             stream.audioSetting.bitRate = bitrate
             stream.audioSetting.sampleRate = sampleRate
             stream.audioSetting.channelCount = if (isStereo) 2 else 1
             stream.hasAudio = true
+            Log.i("RtmpClientImpl", "Audio prepared successfully with MIC source")
             return true
         } catch (e: Exception) {
             Log.e("RtmpClientImpl", "Failed to prepare audio: ${e.message}", e)
