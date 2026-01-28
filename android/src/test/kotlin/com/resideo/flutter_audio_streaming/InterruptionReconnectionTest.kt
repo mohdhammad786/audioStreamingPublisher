@@ -126,6 +126,17 @@ class InterruptionReconnectionTest {
         assert(audioStreaming.getStreamState() == StreamState.INTERRUPTED)
         verify(mockDartMessenger).send(eq(DartMessenger.EventType.AUDIO_INTERRUPTED), anyString(), any())
 
+        // SIMULATE REAL WORLD BEHAVIOR:
+        // When stream stops for interruption, the client disconnects and fires callback.
+        // We must ensure this disconnection doesn't trigger FAILED state or RTMP_STOPPED.
+        rtmpConnectionHandler.notifyDisconnected()
+        
+        // Assert state is STILL INTERRUPTED (not FAILED)
+        assert(audioStreaming.getStreamState() == StreamState.INTERRUPTED)
+        
+        // CRITICAL CHECK: Verify RTMP_STOPPED was NOT sent
+        verify(mockDartMessenger, never()).send(eq(DartMessenger.EventType.RTMP_STOPPED), anyString())
+
         // 3. Music Stops -> Audio Focus Gained
         // AudioFocusManager calls mediator.onPhoneInterruptionEnded()
         val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
