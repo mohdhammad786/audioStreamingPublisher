@@ -298,7 +298,10 @@ class AudioStreaming(
 
     override fun getStreamState(): StreamState = currentState
     
-    override fun runOnMainThread(block: () -> Unit) = runOnMainThreadSafely(block)
+    override fun runOnMainThread(block: () -> Unit) {
+        // execute on main thread unconditionally (Service/Logic requirement)
+        mainHandler.post(block)
+    }
 
     override fun reconnectStream() {
         reconnectionService.reconnectStream()

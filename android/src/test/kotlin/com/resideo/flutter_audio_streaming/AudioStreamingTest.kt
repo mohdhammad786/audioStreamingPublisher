@@ -114,4 +114,25 @@ class AudioStreamingTest {
         audioStreaming.onNetworkLost()
         verify(mockInterruptionManager).handleNetworkLost()
     }
+
+    @Test
+    fun `test runOnMainThread executes even without activity`() {
+        // 1. Setup - Activity is null by default in setup() as we didn't set it? 
+        // Actually constructor calls (context as? Activity), and mockContext is Context.
+        // So activity is null.
+        
+        // Mock handler to execute immediately
+        doAnswer { 
+            (it.arguments[0] as Runnable).run()
+            true 
+        }.`when`(mockHandler).post(any())
+
+        var executed = false
+        audioStreaming.runOnMainThread {
+            executed = true
+        }
+
+        assert(executed) { "Block should have been executed via handler" }
+        verify(mockHandler).post(any())
+    }
 }

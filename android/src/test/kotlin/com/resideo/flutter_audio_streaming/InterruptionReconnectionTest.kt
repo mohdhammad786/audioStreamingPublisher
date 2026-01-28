@@ -268,4 +268,77 @@ class InterruptionReconnectionTest {
         assert(audioStreaming.getStreamState() == StreamState.FAILED)
         verify(mockDartMessenger).send(eq(DartMessenger.EventType.RTMP_STOPPED), contains("Stream stopped due to prolonged interruption"))
     }
+
+    @Test
+    fun `test phone interruption resume sends AUDIO_RESUMED without activity`() {
+        // Simulate Background Service scenario where Activity is null
+        audioStreaming.setActivity(null)
+
+        // 1. Start Streaming
+        whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)
+        whenever(mockClient.isStreaming).thenReturn(false)
+        whenever(mockAudioFocus.requestFocus()).thenReturn(true)
+        
+        audioStreaming.startStreaming("rtmp://test", null)
+        rtmpConnectionHandler.notifyConnected()
+        
+        assert(audioStreaming.getStreamState() == StreamState.STREAMING)
+
+        // 2. Phone Interruption Begins
+        audioStreaming.onPhoneInterruptionBegan()
+        
+        assert(audioStreaming.getStreamState() == StreamState.INTERRUPTED)
+
+        // 3. Phone Interruption Ends
+        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        audioStreaming.onPhoneInterruptionEnded()
+        
+        verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
+        runnableCaptor.value.run()
+        
+        // 4. Simulate RTMP Reconnection Success
+        rtmpConnectionHandler.notifyConnected()
+        
+        // 5. Verify Resumed
+        assert(audioStreaming.getStreamState() == StreamState.STREAMING)
+        verify(mockDartMessenger).send(eq(DartMessenger.EventType.AUDIO_RESUMED), anyString())
+    }
+
+    @Test
+    fun `test network interruption resume sends NETWORK_RESUMED without activity`() {
+        // Simulate Background Service scenario where Activity is null
+        audioStreaming.setActivity(null)
+
+        // 1. Start Streaming
+        whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)
+        whenever(mockClient.isStreaming).thenReturn(false)
+        whenever(mockAudioFocus.requestFocus()).thenReturn(true)
+
+        audioStreaming.startStreaming("rtmp://test", null)
+        rtmpConnectionHandler.notifyConnected()
+        clearInvocations(mockDartMessenger)
+
+        // 2. Network Lost
+        audioStreaming.onNetworkLost()
+        
+        assert(audioStreaming.getStreamState() == StreamState.INTERRUPTED)
+
+        // 3. Network Available
+        val stabilizationCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        audioStreaming.onNetworkAvailable()
+        
+        verify(mockHandler, atLeastOnce()).postDelayed(stabilizationCaptor.capture(), eq(1000L))
+        stabilizationCaptor.allValues.last().run() // Stabilization delay
+
+        val reconnectionCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        verify(mockHandler, atLeastOnce()).postDelayed(reconnectionCaptor.capture(), eq(1000L))
+        reconnectionCaptor.allValues.last().run() // Reconnection delay
+
+        // 4. Simulate RTMP Reconnection Success
+        rtmpConnectionHandler.notifyConnected()
+
+        // 5. Verify Resumed
+        assert(audioStreaming.getStreamState() == StreamState.STREAMING)
+        verify(mockDartMessenger).send(eq(DartMessenger.EventType.NETWORK_RESUMED), anyString())
+    }
 }
