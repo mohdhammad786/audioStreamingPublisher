@@ -148,12 +148,10 @@ class InterruptionManager(
                         } catch (e: Throwable) {
                             Log.e(TAG, "Error stopping stream for interruption: ${e.message}")
                         }
-                        try {
-                            delegate.abandonAudioFocus()
-                        } catch (e: Throwable) {
-                            Log.e(TAG, "Error abandoning audio focus: ${e.message}")
-                        }
-                        sendInterruptionEvent(effectiveSource)
+                        // Do NOT abandon audio focus here. We need it to detect when the interruption (e.g. Music) ends.
+                        // delegate.abandonAudioFocus()
+                        
+                        // Event is sent by StreamStateMachine -> FlutterEventMapper upon state transition
                     }
                 } catch (e: Throwable) {
                     Log.e(TAG, "Error handling interruption began: ${e.message}")
@@ -164,11 +162,9 @@ class InterruptionManager(
             if (delegate.getStreamState() == StreamState.INTERRUPTED) {
                 Log.i(TAG, "✅ All interruptions cleared - Resuming")
                 cancelInterruptionTimeout()
-                if (context.isInForeground) {
-                    delegate.reconnectStream()
-                } else {
-                    context.pendingReconnectOnResume = true
-                }
+                
+                // Always try to reconnect, even in background (Foreground Service handles lifecycle)
+                delegate.reconnectStream()
             }
         }
 
@@ -176,25 +172,7 @@ class InterruptionManager(
         updateTimer(effectiveSource)
     }
     
-    private fun sendInterruptionEvent(source: InterruptionSource) {
-        val eventType = when (source) {
-            InterruptionSource.PHONE_CALL -> DartMessenger.EventType.AUDIO_INTERRUPTED
-            InterruptionSource.SYSTEM_RESOURCE -> DartMessenger.EventType.AUDIO_INTERRUPTED
-            InterruptionSource.NETWORK -> DartMessenger.EventType.NETWORK_INTERRUPTED
-            else -> return
-        }
-        
-        val message = when (source) {
-            InterruptionSource.PHONE_CALL -> "Phone call active"
-            InterruptionSource.SYSTEM_RESOURCE -> "System resource active (Camera/Other)"
-            InterruptionSource.NETWORK -> "Network lost"
-            else -> ""
-        }
-        
-        delegate.runOnMainThread {
-            dartMessenger?.send(eventType, message)
-        }
-    }
+    // Removed sendInterruptionEvent to prevent duplicate events (handled by FlutterEventMapper)
 
     private fun updateTimer(source: InterruptionSource) {
         when (source) {

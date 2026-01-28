@@ -58,15 +58,16 @@ class InterruptionManagerTest {
         // Assert
         verify(mockDelegate).transitionTo(StreamEvent.InterruptionBegan)
         verify(mockDelegate).stopStreamForInterruption()
-        // verify(mockDartMessenger).send(eq(DartMessenger.EventType.AUDIO_INTERRUPTED), any(), any())
+        // Ensure NO event is sent directly from Manager (Duplicate prevention)
+        verify(mockDartMessenger, never()).send(any(), any(), any())
         assert(streamingContext.currentInterruptionSource == InterruptionSource.PHONE_CALL)
     }
 
     @Test
-    fun `test handlePhoneInterruptionEnded reconnects stream if in foreground`() {
+    fun `test handlePhoneInterruptionEnded reconnects even if in background`() {
         // Arrange
         whenever(mockDelegate.getStreamState()).thenReturn(StreamState.INTERRUPTED)
-        streamingContext.isInForeground = true
+        streamingContext.isInForeground = false
         
         // First add interruption to set up state
         interruptionManager.handlePhoneInterruptionBegan()
@@ -75,25 +76,9 @@ class InterruptionManagerTest {
         interruptionManager.handlePhoneInterruptionEnded()
 
         // Assert
+        // Should reconnect immediately because Service handles background
         verify(mockDelegate).reconnectStream()
         assert(streamingContext.currentInterruptionSource == InterruptionSource.NONE)
-    }
-
-    @Test
-    fun `test handlePhoneInterruptionEnded sets pending flag if in background`() {
-        // Arrange
-        whenever(mockDelegate.getStreamState()).thenReturn(StreamState.INTERRUPTED)
-        streamingContext.isInForeground = false
-        
-        // First add interruption
-        interruptionManager.handlePhoneInterruptionBegan()
-        
-        // Act
-        interruptionManager.handlePhoneInterruptionEnded()
-
-        // Assert
-        verify(mockDelegate, never()).reconnectStream()
-        assert(streamingContext.pendingReconnectOnResume)
     }
 
     @Test
@@ -120,19 +105,14 @@ class InterruptionManagerTest {
     }
     
     @Test
-    fun `test resume logic from background`() {
+    fun `test resume logic from background - no pending flag needed`() {
         // Simulate background phone interruption ending
         whenever(mockDelegate.getStreamState()).thenReturn(StreamState.INTERRUPTED)
         streamingContext.isInForeground = false
         interruptionManager.handlePhoneInterruptionBegan()
         interruptionManager.handlePhoneInterruptionEnded()
         
-        assert(streamingContext.pendingReconnectOnResume)
-        
-        // Simulate resume
-        streamingContext.isInForeground = true // Activity is resumed
-        interruptionManager.handleResumeFromInterruption(false)
-        
+        // Since we removed the pending flag logic, we expect immediate reconnection
         verify(mockDelegate).reconnectStream()
         assert(!streamingContext.pendingReconnectOnResume)
     }

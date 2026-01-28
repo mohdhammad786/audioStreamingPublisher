@@ -13,6 +13,8 @@ class FlutterEventMapper(
 ) {
 
     fun handleStateTransition(oldState: StreamState, newState: StreamState, event: StreamEvent) {
+        if (oldState == newState) return // Prevent duplicate events for same-state transitions
+
         when (newState) {
             StreamState.STREAMING -> {
                 if (event == StreamEvent.ReconnectionSuccess) {
