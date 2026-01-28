@@ -55,7 +55,8 @@ class DependencyFactory(
             networkMonitor,
             flutterEventMapper,
             stateMachine,
-            reconnectionService
+            reconnectionService,
+            mainHandler
         )
     }
 }

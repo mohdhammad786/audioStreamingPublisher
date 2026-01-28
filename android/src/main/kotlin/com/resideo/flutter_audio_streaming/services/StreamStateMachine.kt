@@ -39,7 +39,7 @@ class StreamStateMachine(private val onTransition: (oldState: StreamState, newSt
                 StreamEvent.InterruptionEnded -> {
                     // Logic for ending interruption is handled in AudioStreaming via flags, 
                     // but we validate the switch from INTERRUPTED to RECONNECTING separately.
-                    null 
+                    if (oldState == StreamState.INTERRUPTED) StreamState.RECONNECTING else null
                 }
                 StreamEvent.ReconnectionStarted -> {
                     if (oldState == StreamState.INTERRUPTED) StreamState.RECONNECTING else null

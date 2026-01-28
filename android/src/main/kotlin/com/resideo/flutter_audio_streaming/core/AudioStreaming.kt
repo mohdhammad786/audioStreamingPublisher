@@ -27,7 +27,8 @@ class AudioStreaming(
     private val networkMonitor: NetworkMonitorInterface,
     private val flutterEventMapper: FlutterEventMapper,
     private val stateMachine: StreamStateMachine,
-    private val reconnectionService: ReconnectionService
+    private val reconnectionService: ReconnectionService,
+    private val mainHandler: Handler = Handler(Looper.getMainLooper())
 ) : LifecycleEventListener, InterruptionDelegate, StreamingMediator {
 
     companion object {
@@ -47,9 +48,6 @@ class AudioStreaming(
     private val application: Application?
         get() = applicationContext as? Application
 
-    // Handlers
-    private val mainHandler = Handler(Looper.getMainLooper())
-    
     // State machine helper properties
     private val currentState: StreamState
         get() = stateMachine.getCurrentState()

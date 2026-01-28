@@ -17,7 +17,8 @@ interface InterruptionDelegate {
 
 class InterruptionManager(
     private val context: StreamingContext,
-    private val dartMessenger: DartMessenger?
+    private val dartMessenger: DartMessenger?,
+    private val handler: Handler = Handler(Looper.getMainLooper())
 ) {
     lateinit var delegate: InterruptionDelegate
 
@@ -33,7 +34,7 @@ class InterruptionManager(
     
     private var interruptionTimerStartedAt: Long = 0L
     private var interruptionDeadlineMs: Long = 0L
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val mainHandler = handler
     private var interruptionRunnable: Runnable? = null
 
     // Phone Call Interruption Handlers
@@ -242,6 +243,7 @@ class InterruptionManager(
                 // Cleanup
                 interruptions.clear()
                 cancelInterruptionTimeout()
+                updateStateAndTimer()
             }
         }
         

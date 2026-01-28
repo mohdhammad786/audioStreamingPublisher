@@ -42,7 +42,15 @@ class RtmpConnectionHandler(
         mediator.runOnMainThread {
             val currentState = mediator.getStreamState()
 
-            // 1. If we were streaming, assume network interruption first
+            // 1. If we are already INTERRUPTED, this disconnection is likely due to us stopping the stream
+            //    or network loss that triggered the interruption. We should ignore it to preserve the
+            //    INTERRUPTED state so we can resume later.
+            if (currentState == StreamState.INTERRUPTED) {
+                Log.d(TAG, "Disconnected while INTERRUPTED - ignoring to preserve state for resumption")
+                return@runOnMainThread
+            }
+
+            // 2. If we were streaming, assume network interruption first
             // This catches the case where the socket breaks (e.g. internet off) but we want to retry
             if (currentState == StreamState.STREAMING || currentState == StreamState.RECONNECTING) {
                  Log.w(TAG, "Disconnected while $currentState - treating as Network Interruption")

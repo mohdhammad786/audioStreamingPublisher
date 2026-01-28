@@ -6,6 +6,15 @@ import com.resideo.flutter_audio_streaming.interfaces.*
 import com.resideo.flutter_audio_streaming.models.*
 import com.resideo.flutter_audio_streaming.services.*
 import com.resideo.flutter_audio_streaming.utils.DartMessenger
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.mockito.Mock
+import org.mockito.MockedStatic
+import org.mockito.Mockito.*
+import org.mockito.MockitoAnnotations
+import org.mockito.ArgumentMatchers.*
+import android.os.Handler
 
 /**
  * Example Unit Test for AudioStreaming.
@@ -27,12 +36,21 @@ class AudioStreamingTest {
     @Mock lateinit var mockFlutterEventMapper: FlutterEventMapper
     @Mock lateinit var mockStateMachine: StreamStateMachine
     @Mock lateinit var mockReconnectionService: ReconnectionService
+    @Mock lateinit var mockHandler: Handler
 
     private lateinit var audioStreaming: AudioStreaming
     private lateinit var streamingContext: StreamingContext
+    
+    private lateinit var mockedLog: MockedStatic<android.util.Log>
 
     @Before
     fun setup() {
+        mockedLog = mockStatic(android.util.Log::class.java)
+        mockedLog.`when`<Int> { android.util.Log.i(anyString(), anyString()) }.thenReturn(0)
+        mockedLog.`when`<Int> { android.util.Log.d(anyString(), anyString()) }.thenReturn(0)
+        mockedLog.`when`<Int> { android.util.Log.e(anyString(), anyString()) }.thenReturn(0)
+        mockedLog.`when`<Int> { android.util.Log.w(anyString(), anyString()) }.thenReturn(0)
+
         MockitoAnnotations.openMocks(this)
         `when`(mockContext.applicationContext).thenReturn(mockContext)
         
@@ -51,8 +69,14 @@ class AudioStreamingTest {
             mockNetworkMonitor,
             mockFlutterEventMapper,
             mockStateMachine,
-            mockReconnectionService
+            mockReconnectionService,
+            mockHandler
         )
+    }
+
+    @After
+    fun tearDown() {
+        mockedLog.close()
     }
 
     @Test
