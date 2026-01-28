@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.resideo.flutter_audio_streaming.R
 
@@ -35,6 +36,8 @@ class AudioStreamingForegroundService : Service() {
         }
     }
 
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -43,6 +46,12 @@ class AudioStreamingForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = createNotification()
         startForeground(NOTIFICATION_ID, notification)
+
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "flutter_audio_streaming:WakeLock")
+        if (wakeLock?.isHeld != true) {
+            wakeLock?.acquire()
+        }
         return START_STICKY // Restart service if killed by system
     }
 
@@ -82,5 +91,13 @@ class AudioStreamingForegroundService : Service() {
             .setOngoing(true) // Cannot be dismissed
             .setContentIntent(pendingIntent)
             .build()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (wakeLock?.isHeld == true) {
+            wakeLock?.release()
+        }
+        wakeLock = null
     }
 }
