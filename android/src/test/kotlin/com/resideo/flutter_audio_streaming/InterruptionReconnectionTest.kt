@@ -108,6 +108,42 @@ class InterruptionReconnectionTest {
     }
 
     @Test
+    fun `test music interruption (focus loss transient) resume sends AUDIO_RESUMED`() {
+        // 1. Start Streaming
+        whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)
+        whenever(mockClient.isStreaming).thenReturn(false)
+        whenever(mockAudioFocus.requestFocus()).thenReturn(true)
+
+        audioStreaming.startStreaming("rtmp://test", null)
+        rtmpConnectionHandler.notifyConnected()
+        
+        assert(audioStreaming.getStreamState() == StreamState.STREAMING)
+
+        // 2. Music Starts -> Audio Focus Lost Transiently
+        // AudioStreaming.onAudioFocusLostTransient() calls interruptionManager.handlePhoneInterruptionBegan()
+        audioStreaming.onAudioFocusLostTransient()
+        
+        assert(audioStreaming.getStreamState() == StreamState.INTERRUPTED)
+        verify(mockDartMessenger).send(eq(DartMessenger.EventType.AUDIO_INTERRUPTED), anyString(), any())
+
+        // 3. Music Stops -> Audio Focus Gained
+        // AudioFocusManager calls mediator.onPhoneInterruptionEnded()
+        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        audioStreaming.onPhoneInterruptionEnded()
+        
+        // Verify reconnection delay (1000ms)
+        verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
+        runnableCaptor.value.run()
+        
+        // 4. Simulate RTMP Reconnection Success
+        rtmpConnectionHandler.notifyConnected()
+        
+        // 5. Verify Resumed
+        assert(audioStreaming.getStreamState() == StreamState.STREAMING)
+        verify(mockDartMessenger).send(eq(DartMessenger.EventType.AUDIO_RESUMED), anyString())
+    }
+
+    @Test
     fun `test phone interruption resume sends AUDIO_RESUMED`() {
         // 1. Start Streaming
         whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)

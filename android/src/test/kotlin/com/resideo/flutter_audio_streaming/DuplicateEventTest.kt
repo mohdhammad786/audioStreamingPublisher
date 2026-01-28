@@ -32,6 +32,7 @@ class DuplicateEventTest {
             (it.arguments[0] as Runnable).run()
             true
         }
+        whenever(mockHandler.postDelayed(any(), any())).thenReturn(true)
 
         interruptionManager = InterruptionManager(streamingContext, mockDartMessenger, mockHandler)
         interruptionManager.delegate = mockDelegate

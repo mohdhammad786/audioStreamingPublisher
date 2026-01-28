@@ -26,11 +26,18 @@ class HandlerPermissions {
         callback: ResultCallback
     ) {
         if (ongoing) {
-            callback.onResult("audioPermission", "Audio permission request ongoing")
+            callback.onResult("permissionRequest", "Permission request ongoing")
+            return
         }
-        val needsAudio = !hasAudioPermission(activity)
         
-        if (needsAudio) {
+        val missingPermissions = mutableListOf<String>()
+        if (!hasAudioPermission(activity)) missingPermissions.add(permission.RECORD_AUDIO)
+        if (!hasPhoneStatePermission(activity)) missingPermissions.add(permission.READ_PHONE_STATE)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+             if (!hasNotificationPermission(activity)) missingPermissions.add(permission.POST_NOTIFICATIONS)
+        }
+
+        if (missingPermissions.isNotEmpty()) {
             permissionsRegistry.adddListener(
                 RequestPermissionsListener(
                     object : ResultCallback {
@@ -41,9 +48,7 @@ class HandlerPermissions {
                     })
             )
             ongoing = true
-            val toRequest = mutableListOf<String>()
-            if (needsAudio) toRequest.add(permission.RECORD_AUDIO)
-            ActivityCompat.requestPermissions(activity, toRequest.toTypedArray(), AUDIO_REQUEST_ID)
+            ActivityCompat.requestPermissions(activity, missingPermissions.toTypedArray(), AUDIO_REQUEST_ID)
         } else {
             // Permissions already exist. Call the callback with success.
             callback.onResult(null, null)
@@ -53,6 +58,20 @@ class HandlerPermissions {
     private fun hasAudioPermission(activity: Activity): Boolean {
         return (ContextCompat.checkSelfPermission(activity, permission.RECORD_AUDIO)
                 == PackageManager.PERMISSION_GRANTED)
+    }
+
+    private fun hasPhoneStatePermission(activity: Activity): Boolean {
+        return (ContextCompat.checkSelfPermission(activity, permission.READ_PHONE_STATE)
+                == PackageManager.PERMISSION_GRANTED)
+    }
+    
+    private fun hasNotificationPermission(activity: Activity): Boolean {
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            (ContextCompat.checkSelfPermission(activity, permission.POST_NOTIFICATIONS)
+                    == PackageManager.PERMISSION_GRANTED)
+        } else {
+            true
+        }
     }
 
     private fun hasWriteExternalStoragePermission(activity: Activity): Boolean {

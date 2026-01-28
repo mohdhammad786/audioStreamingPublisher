@@ -173,9 +173,15 @@ class AudioStreaming(
         }
 
         // Check for active call
-        if (phoneCallManager.isCallActive) {
-             result?.error("PHONE_CALL_ACTIVE", "Cannot start streaming during an active call", null)
-             return
+        try {
+            if (phoneCallManager.isCallActive) {
+                result?.error("PHONE_CALL_ACTIVE", "Cannot start streaming during an active call", null)
+                return
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "READ_PHONE_STATE permission missing, assuming no active call")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking call state: ${e.message}")
         }
 
         // Request Audio Focus
