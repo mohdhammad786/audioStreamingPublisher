@@ -28,7 +28,7 @@ class RtmpConnectionHandler(
     fun notifyConnected() {
         mediator.runOnMainThread {
             val currentState = mediator.getStreamState()
-            if (currentState == StreamState.RECONNECTING) {
+            if (currentState == StreamState.RECONNECTING || currentState == StreamState.INTERRUPTED) {
                 mediator.transitionTo(StreamEvent.ReconnectionSuccess)
             } else {
                 mediator.transitionTo(StreamEvent.StartSuccess)
