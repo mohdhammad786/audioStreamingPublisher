@@ -91,9 +91,9 @@ class ReconnectionService(
 
     private fun handleReconnectionFailure(reason: String) {
         Log.e(TAG, "Reconnection failed: $reason")
-
-        // Clean up normally
-        stopStream()
+        // Ensure RTMP is stopped and audio focus is released without emitting ExplicitStop
+        try { client.stopStream() } catch (_: Exception) {}
+        try { audioFocusManager.abandonFocus() } catch (_: Exception) {}
         
         // Store error for Mapper
         streamingContext.lastError = reason

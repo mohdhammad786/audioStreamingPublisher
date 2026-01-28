@@ -49,10 +49,17 @@ class RtmpConnectionHandler(
                 Log.d(TAG, "Disconnected while INTERRUPTED - ignoring to preserve state for resumption")
                 return@runOnMainThread
             }
+            
+            // If a reconnection attempt just started, ignore any immediate disconnects to avoid
+            // prematurely failing the stream while reconnect is in progress.
+            if (currentState == StreamState.RECONNECTING) {
+                Log.d(TAG, "Disconnected while RECONNECTING - waiting for reconnection result")
+                return@runOnMainThread
+            }
 
             // 2. If we were streaming, assume network interruption first
             // This catches the case where the socket breaks (e.g. internet off) but we want to retry
-            if (currentState == StreamState.STREAMING || currentState == StreamState.RECONNECTING) {
+            if (currentState == StreamState.STREAMING) {
                  Log.w(TAG, "Disconnected while $currentState - treating as Network Interruption")
                  interruptionManager.handleNetworkLost()
                  return@runOnMainThread

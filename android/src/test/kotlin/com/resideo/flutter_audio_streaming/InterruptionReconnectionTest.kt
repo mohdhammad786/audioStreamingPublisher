@@ -193,10 +193,22 @@ class InterruptionReconnectionTest {
         verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
         
         // Execute the reconnection runnable
+        // This will call: mediator.transitionTo(ReconnectionStarted) -> client.stopStream() -> client.startStream()
+        
+        // SIMULATE REAL WORLD BEHAVIOR:
+        // ReconnectionService calls client.stopStream(). This triggers notifyDisconnected() on the real client.
+        // We must ensure this disconnection is IGNORED because state is RECONNECTING.
+        whenever(mockClient.stopStream()).thenAnswer {
+            rtmpConnectionHandler.notifyDisconnected()
+        }
+        
         runnableCaptor.value.run()
         
-        // Now state should be RECONNECTING
+        // Now state should be RECONNECTING (and not FAILED)
         assert(audioStreaming.getStreamState() == StreamState.RECONNECTING)
+        
+        // Verify no STOPPED/FAILED events were sent during this process
+        verify(mockDartMessenger, never()).send(eq(DartMessenger.EventType.RTMP_STOPPED), anyString())
         
         // 4. Simulate RTMP Reconnection Success
         // Client.startStream() is called inside runnable.
