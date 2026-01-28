@@ -39,6 +39,11 @@ class AudioStreaming(
     private var activity: Activity? = (context as? Activity)
     private var isActivityValid: Boolean = true
 
+    fun setActivity(activity: Activity?) {
+        this.activity = activity
+        this.isActivityValid = activity != null
+    }
+
     private val application: Application?
         get() = applicationContext as? Application
 
@@ -187,6 +192,9 @@ class AudioStreaming(
                     transitionTo(StreamEvent.StartRequested)
                     rtmpAudio.startStream(url)
                     
+                    // Start Foreground Service to keep alive in background
+                    AudioStreamingForegroundService.start(applicationContext)
+                    
                     // Reset Interruption Flags for clean start
                     interruptionManager.reset()
                     streamingContext.pendingReconnectOnResume = false
@@ -194,7 +202,6 @@ class AudioStreaming(
                     streamingContext.activeUrl = url // Persist URL for reconnection
                     
                     // Start Services & Listeners
-                    activity?.let { AudioStreamingForegroundService.start(it) }
                     phoneCallManager.startMonitoring()
                     networkMonitor.startMonitoring()
                     application?.registerActivityLifecycleCallbacks(systemLifecycleObserver)
@@ -222,47 +229,37 @@ class AudioStreaming(
         Log.d(TAG, "stopStreaming requested - current state: $currentState")
 
         try {
-            // Guard against double-stop
             if (currentState == StreamState.IDLE) {
-                Log.d(TAG, "Already stopped, ignoring")
                 result?.success(null)
                 return
             }
 
-            // Cancel any pending tasks
             interruptionManager.reset()
             streamingContext.pendingReconnectOnResume = false
-            
-            // Clean up RTMP
+
             try {
                 if (rtmpAudio.isStreaming) {
                     rtmpAudio.stopStream()
                 }
-            } catch (e:  Throwable) {
-                Log.e(TAG, "Error stopping stream: ${e.message}")
+            } catch (_: Throwable) {
             }
 
-            // Clean up Managers & Services
             audioFocusManager.abandonFocus()
             phoneCallManager.stopMonitoring()
             networkMonitor.stopMonitoring()
 
-            activity?.let { AudioStreamingForegroundService.stop(it) }
+            AudioStreamingForegroundService.stop(applicationContext)
             application?.unregisterActivityLifecycleCallbacks(systemLifecycleObserver)
 
-            // Reset State
             transitionTo(StreamEvent.ExplicitStop)
-            streamingContext.activeUrl = null // Crucial: clear URL only on explicit stop
+            streamingContext.activeUrl = null
             streamingContext.currentInterruptionSource = InterruptionSource.NONE
-            
+
             result?.success(null)
-            Log.d(TAG, "Stream stopped and state reset")
         } catch (e: Throwable) {
-             Log.e(TAG, "Fatal error in stopStreaming: ${e.message}")
-             // Ensure state is reset even if crash occurs
-             transitionTo(StreamEvent.ExplicitStop)
-             streamingContext.activeUrl = null
-             result?.error("STOP_FAILED", e.message, null)
+            transitionTo(StreamEvent.ExplicitStop)
+            streamingContext.activeUrl = null
+            result?.error("STOP_FAILED", e.message, null)
         }
     }
 
@@ -351,15 +348,19 @@ class AudioStreaming(
                 StreamState.INTERRUPTED, StreamState.RECONNECTING -> {
                     Log.i(TAG, "Activity destroyed during interruption - deferring cleanup")
                     isActivityValid = false
-                    // Don't call stopStreaming() - let interruption timer handle it
+                    this.activity = null
+                    // Don't call stopStreaming() - let interruption timer handle it or service keep it alive
                 }
                 StreamState.STREAMING, StreamState.PREPARING -> {
-                    Log.i(TAG, "Activity destroyed while active - stopping cleanly")
+                    Log.i(TAG, "Activity destroyed while active - keeping service alive")
                     isActivityValid = false
-                    stopStreaming(null)
+                    this.activity = null
+                    // CRITICAL FIX: Do NOT stop streaming here. 
+                    // The Foreground Service will keep the process alive.
                 }
                 else -> {
                     isActivityValid = false
+                    this.activity = null
                 }
             }
         }

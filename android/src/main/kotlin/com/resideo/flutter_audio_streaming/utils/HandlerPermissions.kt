@@ -28,10 +28,9 @@ class HandlerPermissions {
         if (ongoing) {
             callback.onResult("audioPermission", "Audio permission request ongoing")
         }
-        if (!hasAudioPermission(activity) && !hasWriteExternalStoragePermission(activity) && !hasWakeLockPermission(
-                activity
-            )
-        ) {
+        val needsAudio = !hasAudioPermission(activity)
+        val needsWrite = !hasWriteExternalStoragePermission(activity)
+        if (needsAudio || needsWrite) {
             permissionsRegistry.adddListener(
                 RequestPermissionsListener(
                     object : ResultCallback {
@@ -42,15 +41,10 @@ class HandlerPermissions {
                     })
             )
             ongoing = true
-            ActivityCompat.requestPermissions(
-                activity,
-                arrayOf(
-                    permission.RECORD_AUDIO,
-                    permission.WRITE_EXTERNAL_STORAGE,
-                    permission.WAKE_LOCK
-                ),
-                AUDIO_REQUEST_ID
-            )
+            val toRequest = mutableListOf<String>()
+            if (needsAudio) toRequest.add(permission.RECORD_AUDIO)
+            if (needsWrite) toRequest.add(permission.WRITE_EXTERNAL_STORAGE)
+            ActivityCompat.requestPermissions(activity, toRequest.toTypedArray(), AUDIO_REQUEST_ID)
         } else {
             // Permissions already exist. Call the callback with success.
             callback.onResult(null, null)
@@ -67,10 +61,7 @@ class HandlerPermissions {
                 == PackageManager.PERMISSION_GRANTED)
     }
 
-    private fun hasWakeLockPermission(activity: Activity): Boolean {
-        return (ContextCompat.checkSelfPermission(activity, permission.WAKE_LOCK)
-                == PackageManager.PERMISSION_GRANTED)
-    }
+    private fun hasWakeLockPermission(activity: Activity): Boolean = true
 
 
     @VisibleForTesting
@@ -90,7 +81,7 @@ class HandlerPermissions {
                 return false
             }
             alreadyCalled = true
-            if (grantResults.size == 0 || grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+            if (grantResults.isEmpty() || grantResults.any { it != PackageManager.PERMISSION_GRANTED }) {
                 callback.onResult("audioPermission", "MediaRecorderAudio permission not granted")
             } else {
                 callback.onResult(null, null)

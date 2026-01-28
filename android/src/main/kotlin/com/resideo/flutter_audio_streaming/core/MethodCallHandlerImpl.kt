@@ -11,10 +11,8 @@ import com.resideo.flutter_audio_streaming.utils.DartMessenger
 import com.resideo.flutter_audio_streaming.di.DependencyFactory
 
 class MethodCallHandlerImpl(
-    private val activity: Activity,
     private val messenger: BinaryMessenger,
-    private val permissions: HandlerPermissions,
-    private val permissionsRegistry: HandlerPermissions.PermissionStuff
+    private val permissions: HandlerPermissions
 ) : MethodCallHandler {
 
     private val methodChannel: MethodChannel =
@@ -23,6 +21,18 @@ class MethodCallHandlerImpl(
     private var recordingMessenger: DartMessenger? = null
     private var audioStreaming: AudioStreaming? = null
     private var audioRecording: AudioRecording? = null
+
+    private var activity: Activity? = null
+    private var permissionsRegistry: HandlerPermissions.PermissionStuff? = null
+
+    fun setActivity(activity: Activity?) {
+        this.activity = activity
+        audioStreaming?.setActivity(activity)
+    }
+
+    fun setPermissionsRegistry(registry: HandlerPermissions.PermissionStuff?) {
+        this.permissionsRegistry = registry
+    }
 
     init {
         methodChannel.setMethodCallHandler(this)
@@ -48,21 +58,25 @@ class MethodCallHandlerImpl(
                 audioStreaming?.getStatistics(result)
             }
 
-            //Audio streaming
             "initializeStreaming" -> {
                 Log.i("AudioStreaming", "initializeAudio")
+                val currentActivity = activity
+                val currentRegistry = permissionsRegistry
+                if (currentActivity == null || currentRegistry == null) {
+                    result.error("NO_ACTIVITY", "Cannot initialize streaming without an active activity", null)
+                    return
+                }
+
                 permissions.requestPermissions(
-                    activity,
-                    permissionsRegistry,
+                    currentActivity,
+                    currentRegistry,
                     object : HandlerPermissions.ResultCallback {
                         override fun onResult(errorCode: String?, errorDescription: String?) {
                             if (errorCode == null) {
                                 streamingMessenger = DartMessenger(messenger, "streaming_event")
-                                // Using DependencyFactory for centralized dependency injection
-                                val factory = DependencyFactory(activity, streamingMessenger!!)
+                                val factory = DependencyFactory(currentActivity.applicationContext, streamingMessenger!!)
                                 audioStreaming = factory.createAudioStreaming()
                                 result.success(null)
-
                             } else {
                                 result.error(errorCode, errorDescription, null)
                             }
@@ -87,22 +101,26 @@ class MethodCallHandlerImpl(
             }
             "disposeStreaming" -> {
                 Log.i("AudioStreaming", "disposeAudio")
-                // Native camera view handles the view lifecircle by themselves
                 result.success(null)
             }
 
-            //Audio recording
             "initializeRecording" -> {
                 Log.i("AudioRecording", "initializeAudio")
-                Log.i("AudioRecording", call.argument("path") ?: "")
+                val currentActivity = activity
+                val currentRegistry = permissionsRegistry
+                if (currentActivity == null || currentRegistry == null) {
+                    result.error("NO_ACTIVITY", "Cannot initialize recording without an active activity", null)
+                    return
+                }
+
                 permissions.requestPermissions(
-                    activity,
-                    permissionsRegistry,
+                    currentActivity,
+                    currentRegistry,
                     object : HandlerPermissions.ResultCallback {
                         override fun onResult(errorCode: String?, errorDescription: String?) {
                             if (errorCode == null) {
                                 recordingMessenger = DartMessenger(messenger, "recording_event")
-                                audioRecording = AudioRecording(activity, recordingMessenger)
+                                audioRecording = AudioRecording(currentActivity, recordingMessenger)
                                 audioRecording?.init(call.argument("path"))
                                 result.success(null)
                             } else {
@@ -133,7 +151,6 @@ class MethodCallHandlerImpl(
             }
             "disposeRecording" -> {
                 Log.i("AudioRecording", "disposeAudio")
-                // Native camera view handles the view lifecircle by themselves
                 result.success(null)
             }
             else -> result.notImplemented()

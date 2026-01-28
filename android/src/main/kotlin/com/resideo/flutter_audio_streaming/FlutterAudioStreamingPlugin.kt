@@ -27,53 +27,41 @@ public class FlutterAudioStreamingPlugin : FlutterPlugin, ActivityAware {
     override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         Log.v(TAG, "onAttachedToEngine $flutterPluginBinding")
         this.flutterPluginBinding = flutterPluginBinding
+        methodCallHandler = MethodCallHandlerImpl(
+            flutterPluginBinding.binaryMessenger,
+            HandlerPermissions()
+        )
     }
 
     override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
         Log.v(TAG, "onDetachedFromEngine $binding")
-        flutterPluginBinding = null
-    }
-
-    private fun maybeStartListening(
-        activity: Activity,
-        messenger: BinaryMessenger,
-        permissionsRegistry: HandlerPermissions.PermissionStuff
-    ) {
-        methodCallHandler = MethodCallHandlerImpl(
-            activity,
-            messenger,
-            HandlerPermissions(),
-            permissionsRegistry
-        )
-    }
-
-    override fun onDetachedFromActivity() {
-        Log.v(TAG, "onDetachedFromActivity")
         methodCallHandler?.stopListening()
         methodCallHandler = null
-    }
-
-    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-        onAttachedToActivity(binding)
+        flutterPluginBinding = null
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         Log.v(TAG, "onAttachedToActivity $binding")
-        flutterPluginBinding?.apply {
-            maybeStartListening(
-                binding.activity,
-                binaryMessenger,
-                object : HandlerPermissions.PermissionStuff {
-                    override fun adddListener(listener: PluginRegistry.RequestPermissionsResultListener) {
-                        binding.addRequestPermissionsResultListener(listener);
-                    }
-                }
-            )
-        }
+        methodCallHandler?.setActivity(binding.activity)
+        methodCallHandler?.setPermissionsRegistry(object : HandlerPermissions.PermissionStuff {
+             override fun adddListener(listener: PluginRegistry.RequestPermissionsResultListener) {
+                 binding.addRequestPermissionsResultListener(listener);
+             }
+        })
+    }
+
+    override fun onDetachedFromActivity() {
+        Log.v(TAG, "onDetachedFromActivity")
+        methodCallHandler?.setActivity(null)
+        methodCallHandler?.setPermissionsRegistry(null)
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
         onDetachedFromActivity()
+    }
+
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+        onAttachedToActivity(binding)
     }
 
     companion object {
