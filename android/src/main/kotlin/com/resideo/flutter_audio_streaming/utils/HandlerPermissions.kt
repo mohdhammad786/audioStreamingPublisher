@@ -29,8 +29,8 @@ class HandlerPermissions {
             callback.onResult("audioPermission", "Audio permission request ongoing")
         }
         val needsAudio = !hasAudioPermission(activity)
-        val needsWrite = !hasWriteExternalStoragePermission(activity)
-        if (needsAudio || needsWrite) {
+        
+        if (needsAudio) {
             permissionsRegistry.adddListener(
                 RequestPermissionsListener(
                     object : ResultCallback {
@@ -43,7 +43,6 @@ class HandlerPermissions {
             ongoing = true
             val toRequest = mutableListOf<String>()
             if (needsAudio) toRequest.add(permission.RECORD_AUDIO)
-            if (needsWrite) toRequest.add(permission.WRITE_EXTERNAL_STORAGE)
             ActivityCompat.requestPermissions(activity, toRequest.toTypedArray(), AUDIO_REQUEST_ID)
         } else {
             // Permissions already exist. Call the callback with success.
