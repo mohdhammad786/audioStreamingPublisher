@@ -130,7 +130,8 @@ class RtmpClientImpl(
                 "NetConnection.Connect.Failed",
                 "NetConnection.Connect.Rejected" -> {
                     streamingActive = false
-                    handler.notifyDisconnected()
+                    val description = data["description"] as? String
+                    handler.notifyDisconnected(code, description)
                 }
                 "NetStream.Publish.BadName",
                 "NetStream.Publish.Rejected" -> handler.notifyAuthError(code)

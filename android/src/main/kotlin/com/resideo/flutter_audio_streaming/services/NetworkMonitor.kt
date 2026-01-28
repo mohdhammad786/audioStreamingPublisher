@@ -49,7 +49,7 @@ class NetworkMonitor(
 
     companion object {
         private const val TAG = "NetworkMonitor"
-        private const val DEBOUNCE_DELAY_MS = 1500L  // Increased to 1.5s to filter transient wake-up glitches
+        private const val DEBOUNCE_DELAY_MS = 500L  // Reduced to 500ms for faster response
     }
 
     override fun startMonitoring() {

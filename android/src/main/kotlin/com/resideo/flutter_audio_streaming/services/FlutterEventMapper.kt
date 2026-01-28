@@ -37,7 +37,7 @@ class FlutterEventMapper(
                 dartMessenger?.send(eventType, "Stream paused due to ${streamingContext.currentInterruptionSource}", extras)
             }
             StreamState.FAILED -> {
-                // Failures usually handled by explicit result.error or RTMP_STOPPED
+                dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Stream connection failed")
             }
             StreamState.IDLE -> {
                  if (event == StreamEvent.ExplicitStop) {

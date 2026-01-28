@@ -36,14 +36,33 @@ class RtmpConnectionHandler(
         }
     }
 
-    fun notifyDisconnected() {
-        Log.i(TAG, "RTMP Connection Disconnected/Failed")
+    fun notifyDisconnected(code: String? = null, description: String? = null) {
+        Log.i(TAG, "RTMP Connection Disconnected/Failed - Code: $code, Desc: $description")
+
+        // Check for network-related errors to trigger interruption instead of failure
+        if (description != null && isNetworkRelatedError(description)) {
+            Log.w(TAG, "Network error detected from RTMP: $description - Treating as Network Interruption")
+            interruptionManager.handleNetworkLost()
+            return
+        }
+
         mediator.runOnMainThread {
             val currentState = mediator.getStreamState()
             if (currentState != StreamState.IDLE) {
                 mediator.transitionTo(StreamEvent.ReconnectionFailed)
             }
         }
+    }
+
+    private fun isNetworkRelatedError(description: String): Boolean {
+        val keywords = listOf(
+            "network", "timeout", "unreachable", "connection refused",
+            "no route", "socket", "broken pipe", "failed to connect",
+            "host", "resolve", "dns", "ioexception",
+            "software", "abort", "connection reset", "etimedout", "ehostunreach"
+        )
+        val lowerDesc = description.lowercase()
+        return keywords.any { lowerDesc.contains(it) }
     }
 
     fun notifyAuthError(code: String?) {
