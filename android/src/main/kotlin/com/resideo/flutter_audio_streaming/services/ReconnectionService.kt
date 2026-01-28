@@ -2,6 +2,8 @@ package com.resideo.flutter_audio_streaming.services
 
 import android.os.Handler
 import android.util.Log
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 import com.resideo.flutter_audio_streaming.utils.DartMessenger
 import com.resideo.flutter_audio_streaming.interfaces.AudioFocusMonitorInterface
 import com.resideo.flutter_audio_streaming.interfaces.StreamingClient
@@ -20,8 +22,9 @@ class ReconnectionService(
     private val dartMessenger: DartMessenger?
 ) {
     lateinit var mediator: StreamingMediator
-    lateinit var prepareStream: () -> Boolean
+    lateinit var prepareStream: suspend () -> Boolean
     lateinit var stopStream: () -> Unit
+    private val scope = MainScope()
 
     companion object {
         private const val TAG = "ReconnectionService"
@@ -50,36 +53,38 @@ class ReconnectionService(
                 return@postDelayed
             }
 
-            mediator.transitionTo(StreamEvent.ReconnectionStarted)
+            scope.launch {
+                mediator.transitionTo(StreamEvent.ReconnectionStarted)
 
-            try {
-                Log.d(TAG, "Starting reconnection sequence on Main Thread...")
+                try {
+                    Log.d(TAG, "Starting reconnection sequence on Main Thread...")
 
-                // 1. Ensure clean slate (Stop RTMP only, don't reset full state)
-                try { client.stopStream() } catch (e: Exception) {}
+                    // 1. Ensure clean slate (Stop RTMP only, don't reset full state)
+                    try { client.stopStream() } catch (e: Exception) {}
 
-                // 2. Force Audio Prepare (Re-initializes buffers/encoders)
-                val prepared = prepareStream()
-                if (!prepared) {
-                     Log.e(TAG, "Failed to re-prepare audio components")
-                     handleReconnectionFailure("Device prepare failed")
-                     return@postDelayed
+                    // 2. Force Audio Prepare (Re-initializes buffers/encoders)
+                    val prepared = prepareStream()
+                    if (!prepared) {
+                         Log.e(TAG, "Failed to re-prepare audio components")
+                         handleReconnectionFailure("Device prepare failed")
+                         return@launch
+                    }
+                    
+                    // 3. Acquire Focus
+                    if (!audioFocusManager.requestFocus()) {
+                        Log.e(TAG, "Failed to acquire audio focus for reconnection")
+                        handleReconnectionFailure("Could not regain audio focus")
+                        return@launch
+                    }
+
+                    // 4. Start RTMP Stream
+                    Log.i(TAG, "🚀 Restarting RTMP stream to $url")
+                    client.startStream(url)
+
+                } catch (e: Exception) {
+                    Log.e(TAG, "Reconnection exception: ${e.message}")
+                    handleReconnectionFailure(e.message ?: "Unknown error")
                 }
-                
-                // 3. Acquire Focus
-                if (!audioFocusManager.requestFocus()) {
-                    Log.e(TAG, "Failed to acquire audio focus for reconnection")
-                    handleReconnectionFailure("Could not regain audio focus")
-                    return@postDelayed
-                }
-
-                // 4. Start RTMP Stream
-                Log.i(TAG, "🚀 Restarting RTMP stream to $url")
-                client.startStream(url)
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Reconnection exception: ${e.message}")
-                handleReconnectionFailure(e.message ?: "Unknown error")
             }
         }, 1000)
     }

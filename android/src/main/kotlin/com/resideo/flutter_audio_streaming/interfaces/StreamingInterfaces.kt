@@ -8,7 +8,7 @@ import com.resideo.flutter_audio_streaming.models.StreamEvent
  */
 interface StreamingClient {
     val isStreaming: Boolean
-    fun prepareAudio(bitrate: Int, sampleRate: Int, isStereo: Boolean, echoCanceler: Boolean, noiseSuppressor: Boolean): Boolean
+    suspend fun prepareAudio(bitrate: Int, sampleRate: Int, isStereo: Boolean, echoCanceler: Boolean, noiseSuppressor: Boolean): Boolean
     fun startStream(url: String)
     fun stopStream()
     fun disableAudio()

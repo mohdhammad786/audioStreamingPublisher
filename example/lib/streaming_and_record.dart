@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_audio_streaming/flutter_audio_streaming.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class StreamingAndRecordExample extends StatefulWidget {
   const StreamingAndRecordExample({Key? key}) : super(key: key);
@@ -72,6 +73,7 @@ class _StreamingAndRecordExampleState extends State<StreamingAndRecordExample>
   }
 
   void initialize() async {
+    await _requestPermissions();
     streamingController.addListener(() async {
       if (streamingController.value.hasError) {
         showInSnackBar(
@@ -122,6 +124,23 @@ class _StreamingAndRecordExampleState extends State<StreamingAndRecordExample>
     await _prepareSaveDir();
     await recordingController.initialize(
         pathFile(DateTime.now().millisecondsSinceEpoch.toString() + '.aac'));
+  }
+
+  Future<void> _requestPermissions() async {
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.microphone,
+      Permission.phone,
+      Permission.storage,
+      Permission.notification, // For Android 13+
+    ].request();
+
+    print("Permissions status: $statuses");
+    if (statuses[Permission.microphone] != PermissionStatus.granted) {
+      showInSnackBar('Microphone permission is required');
+    }
+    if (statuses[Permission.phone] != PermissionStatus.granted) {
+      showInSnackBar('Phone permission is required');
+    }
   }
 
   String pathFile(String name) => _localPath + Platform.pathSeparator + name;

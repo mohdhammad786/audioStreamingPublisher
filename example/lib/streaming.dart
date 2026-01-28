@@ -3,6 +3,7 @@ import 'dart:developer';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_audio_streaming/flutter_audio_streaming.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class StreamingExample extends StatefulWidget {
   const StreamingExample({Key? key}) : super(key: key);
@@ -68,6 +69,7 @@ class _StreamingExampleState extends State<StreamingExample>
   }
 
   void initialize() async {
+    await _requestPermissions();
     controller.addListener(() async {
       if (controller.value.hasError) {
         showInSnackBar('Camera error ${controller.value.errorDescription}');
@@ -91,6 +93,21 @@ class _StreamingExampleState extends State<StreamingExample>
     });
     await controller.initialize();
     controller.prepare();
+  }
+
+  Future<void> _requestPermissions() async {
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.microphone,
+      Permission.phone,
+      Permission.notification, // For Android 13+
+    ].request();
+
+    if (statuses[Permission.microphone] != PermissionStatus.granted) {
+      showInSnackBar('Microphone permission is required');
+    }
+    if (statuses[Permission.phone] != PermissionStatus.granted) {
+      showInSnackBar('Phone permission is required');
+    }
   }
 
   Future<String> startStreaming() async {

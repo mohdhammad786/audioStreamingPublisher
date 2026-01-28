@@ -85,19 +85,35 @@ class MethodCallHandlerImpl(
             }
             "startStreaming" -> {
                 Log.i("AudioStreaming", "startAudioStreaming")
-                audioStreaming?.startStreaming(call.argument("url"), result)
+                if (audioStreaming != null) {
+                    audioStreaming?.startStreaming(call.argument("url"), result)
+                } else {
+                    result.error("NOT_INITIALIZED", "AudioStreaming is not initialized", null)
+                }
             }
             "stopStreaming" -> {
                 Log.i("AudioStreaming", "stopStreaming")
-                audioStreaming?.stopStreaming(result)
+                if (audioStreaming != null) {
+                    audioStreaming?.stopStreaming(result)
+                } else {
+                    result.error("NOT_INITIALIZED", "AudioStreaming is not initialized", null)
+                }
             }
             "muteStreaming" -> {
                 Log.i("AudioStreaming", "muteStreaming")
-                audioStreaming?.muteStreaming(result)
+                if (audioStreaming != null) {
+                    audioStreaming?.muteStreaming(result)
+                } else {
+                    result.error("NOT_INITIALIZED", "AudioStreaming is not initialized", null)
+                }
             }
             "unMuteStreaming" -> {
                 Log.i("AudioStreaming", "unMuteStreaming")
-                audioStreaming?.unMuteStreaming(result)
+                if (audioStreaming != null) {
+                    audioStreaming?.unMuteStreaming(result)
+                } else {
+                    result.error("NOT_INITIALIZED", "AudioStreaming is not initialized", null)
+                }
             }
             "disposeStreaming" -> {
                 Log.i("AudioStreaming", "disposeAudio")

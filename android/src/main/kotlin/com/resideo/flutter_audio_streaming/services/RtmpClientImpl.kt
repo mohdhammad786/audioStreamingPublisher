@@ -35,7 +35,7 @@ class RtmpClientImpl(
     override val isStreaming: Boolean
         get() = streamingActive
 
-    override fun prepareAudio(
+    override suspend fun prepareAudio(
         bitrate: Int,
         sampleRate: Int,
         isStereo: Boolean,
@@ -49,7 +49,7 @@ class RtmpClientImpl(
                 audioSource = MediaRecorder.AudioSource.MIC
             }
             
-            val attachResult = runBlocking { mixer.attachAudio(0, micSource) }
+            val attachResult = mixer.attachAudio(0, micSource)
             
             if (attachResult.isFailure) {
                 Log.e("RtmpClientImpl", "Failed to attach MIC source: ${attachResult.exceptionOrNull()}")

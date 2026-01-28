@@ -100,7 +100,13 @@ class HandlerPermissions {
             }
             alreadyCalled = true
             if (grantResults.isEmpty() || grantResults.any { it != PackageManager.PERMISSION_GRANTED }) {
-                callback.onResult("audioPermission", "MediaRecorderAudio permission not granted")
+                // Find which permission was denied for better error message
+                val deniedPermissions = permissions.filterIndexed { index, _ -> grantResults[index] != PackageManager.PERMISSION_GRANTED }
+                val sb = StringBuilder("Permissions not granted: ")
+                for (perm in deniedPermissions) {
+                    sb.append(perm).append(" ")
+                }
+                callback.onResult("permissionError", sb.toString())
             } else {
                 callback.onResult(null, null)
             }

@@ -15,6 +15,12 @@ import org.mockito.Mockito.*
 import org.mockito.MockitoAnnotations
 import org.mockito.ArgumentMatchers.*
 import android.os.Handler
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.runBlocking
+import org.mockito.kotlin.whenever
 
 /**
  * Example Unit Test for AudioStreaming.
@@ -45,6 +51,7 @@ class AudioStreamingTest {
 
     @Before
     fun setup() {
+        Dispatchers.setMain(UnconfinedTestDispatcher())
         mockedLog = mockStatic(android.util.Log::class.java)
         mockedLog.`when`<Int> { android.util.Log.i(anyString(), anyString()) }.thenReturn(0)
         mockedLog.`when`<Int> { android.util.Log.d(anyString(), anyString()) }.thenReturn(0)
@@ -76,15 +83,16 @@ class AudioStreamingTest {
 
     @After
     fun tearDown() {
+        Dispatchers.resetMain()
         mockedLog.close()
     }
 
     @Test
-    fun `test startStreaming initializes components correctly`() {
+    fun `test startStreaming initializes components correctly`() = runBlocking {
         // 1. Setup
         `when`(mockPhoneMonitor.isCallActive).thenReturn(false)
         `when`(mockAudioFocus.requestFocus()).thenReturn(true)
-        `when`(mockClient.prepareAudio(anyInt(), anyInt(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(true)
+        whenever(mockClient.prepareAudio(anyInt(), anyInt(), anyBoolean(), anyBoolean(), anyBoolean())).thenReturn(true)
         `when`(mockClient.isStreaming).thenReturn(false)
 
         audioStreaming.startStreaming("rtmp://test", null)

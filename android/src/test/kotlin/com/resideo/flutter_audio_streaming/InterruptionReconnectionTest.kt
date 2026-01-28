@@ -19,6 +19,11 @@ import org.mockito.ArgumentCaptor
 import org.mockito.kotlin.whenever
 import org.mockito.kotlin.any
 import org.mockito.kotlin.eq
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.runBlocking
 
 class InterruptionReconnectionTest {
 
@@ -44,6 +49,7 @@ class InterruptionReconnectionTest {
 
     @Before
     fun setup() {
+        Dispatchers.setMain(UnconfinedTestDispatcher())
         mockedLog = mockStatic(android.util.Log::class.java)
         mockedLog.`when`<Int> { android.util.Log.i(anyString(), anyString()) }.thenReturn(0)
         mockedLog.`when`<Int> { android.util.Log.d(anyString(), anyString()) }.thenReturn(0)
@@ -104,11 +110,12 @@ class InterruptionReconnectionTest {
 
     @After
     fun tearDown() {
+        Dispatchers.resetMain()
         mockedLog.close()
     }
 
     @Test
-    fun `test music interruption (focus loss transient) resume sends AUDIO_RESUMED`() {
+    fun `test music interruption (focus loss transient) resume sends AUDIO_RESUMED`() = runBlocking {
         // 1. Start Streaming
         whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)
         whenever(mockClient.isStreaming).thenReturn(false)
@@ -155,7 +162,7 @@ class InterruptionReconnectionTest {
     }
 
     @Test
-    fun `test phone interruption resume sends AUDIO_RESUMED`() {
+    fun `test phone interruption resume sends AUDIO_RESUMED`() = runBlocking {
         // 1. Start Streaming
         whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)
         whenever(mockClient.isStreaming).thenReturn(false)
@@ -202,7 +209,7 @@ class InterruptionReconnectionTest {
     }
 
     @Test
-    fun `test direct reconnection from INTERRUPTED state sends AUDIO_RESUMED`() {
+    fun `test direct reconnection from INTERRUPTED state sends AUDIO_RESUMED`() = runBlocking {
         // 1. Start Streaming
         whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)
         whenever(mockClient.isStreaming).thenReturn(false)
@@ -233,7 +240,7 @@ class InterruptionReconnectionTest {
     }
 
     @Test
-    fun `test network interruption resume sends NETWORK_RESUMED`() {
+    fun `test network interruption resume sends NETWORK_RESUMED`() = runBlocking {
         // 1. Start Streaming
         whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)
         whenever(mockClient.isStreaming).thenReturn(false)
@@ -288,7 +295,7 @@ class InterruptionReconnectionTest {
     }
 
     @Test
-    fun `test network interruption timeout sends RTMP_STOPPED`() {
+    fun `test network interruption timeout sends RTMP_STOPPED`() = runBlocking {
         // 1. Start Streaming
         whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)
         whenever(mockClient.isStreaming).thenReturn(false)
@@ -317,7 +324,7 @@ class InterruptionReconnectionTest {
     }
 
     @Test
-    fun `test phone interruption resume sends AUDIO_RESUMED without activity`() {
+    fun `test phone interruption resume sends AUDIO_RESUMED without activity`() = runBlocking {
         // Simulate Background Service scenario where Activity is null
         audioStreaming.setActivity(null)
 
@@ -352,7 +359,7 @@ class InterruptionReconnectionTest {
     }
 
     @Test
-    fun `test network interruption resume sends NETWORK_RESUMED without activity`() {
+    fun `test network interruption resume sends NETWORK_RESUMED without activity`() = runBlocking {
         // Simulate Background Service scenario where Activity is null
         audioStreaming.setActivity(null)
 

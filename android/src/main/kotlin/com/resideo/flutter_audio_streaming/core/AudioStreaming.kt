@@ -8,6 +8,8 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import io.flutter.plugin.common.MethodChannel
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 
 import com.resideo.flutter_audio_streaming.models.*
 import com.resideo.flutter_audio_streaming.services.*
@@ -39,6 +41,7 @@ class AudioStreaming(
     private val applicationContext: Context = context.applicationContext
     private var activity: Activity? = (context as? Activity)
     private var isActivityValid: Boolean = true
+    private val scope = MainScope()
 
     fun setActivity(activity: Activity?) {
         this.activity = activity
@@ -138,10 +141,14 @@ class AudioStreaming(
         streamingContext.isStereo = isStereo
         streamingContext.echoCanceler = echoCanceler
         streamingContext.noiseSuppressor = noiseSuppressor
-        return prepareInternal()
+        
+        scope.launch {
+            prepareInternal()
+        }
+        return true
     }
 
-    private fun prepareInternal(): Boolean {
+    private suspend fun prepareInternal(): Boolean {
         return rtmpAudio.prepareAudio(
             streamingContext.bitrate ?: (128 * 1024),
             streamingContext.sampleRate ?: 44100,
@@ -190,42 +197,44 @@ class AudioStreaming(
              return
         }
 
-        try {
-            if (!rtmpAudio.isStreaming) {
-                if (prepareInternal()) {
-                    transitionTo(StreamEvent.StartRequested)
-                    rtmpAudio.startStream(url)
-                    
-                    // Start Foreground Service to keep alive in background
-                    AudioStreamingForegroundService.start(applicationContext)
-                    
-                    // Reset Interruption Flags for clean start
-                    interruptionManager.reset()
-                    streamingContext.pendingReconnectOnResume = false
-                    
-                    streamingContext.activeUrl = url // Persist URL for reconnection
-                    
-                    // Start Services & Listeners
-                    phoneCallManager.startMonitoring()
-                    networkMonitor.startMonitoring()
-                    application?.registerActivityLifecycleCallbacks(systemLifecycleObserver)
-                    streamingContext.isInForeground = true
+        scope.launch {
+            try {
+                if (!rtmpAudio.isStreaming) {
+                    if (prepareInternal()) {
+                        transitionTo(StreamEvent.StartRequested)
+                        rtmpAudio.startStream(url)
+                        
+                        // Start Foreground Service to keep alive in background
+                        AudioStreamingForegroundService.start(applicationContext)
+                        
+                        // Reset Interruption Flags for clean start
+                        interruptionManager.reset()
+                        streamingContext.pendingReconnectOnResume = false
+                        
+                        streamingContext.activeUrl = url // Persist URL for reconnection
+                        
+                        // Start Services & Listeners
+                        phoneCallManager.startMonitoring()
+                        networkMonitor.startMonitoring()
+                        application?.registerActivityLifecycleCallbacks(systemLifecycleObserver)
+                        streamingContext.isInForeground = true
 
-                    val ret = hashMapOf<String, Any>()
-                    ret["url"] = url
-                    result?.success(ret)
+                        val ret = hashMapOf<String, Any>()
+                        ret["url"] = url
+                        result?.success(ret)
+                    } else {
+                        audioFocusManager.abandonFocus()
+                        transitionTo(StreamEvent.StartFailed)
+                        result?.error("AudioStreamingFailed", "Error preparing stream", null)
+                    }
                 } else {
-                    audioFocusManager.abandonFocus()
-                    transitionTo(StreamEvent.StartFailed)
-                    result?.error("AudioStreamingFailed", "Error preparing stream", null)
+                     Log.w(TAG, "Already streaming, ignoring start request")
+                     result?.success(null)
                 }
-            } else {
-                 Log.w(TAG, "Already streaming, ignoring start request")
-                 result?.success(null)
+            } catch (e: Exception) {
+                audioFocusManager.abandonFocus()
+                result?.error("AudioStreamingFailed", e.message, null)
             }
-        } catch (e: Exception) {
-            audioFocusManager.abandonFocus()
-            result?.error("AudioStreamingFailed", e.message, null)
         }
     }
 
