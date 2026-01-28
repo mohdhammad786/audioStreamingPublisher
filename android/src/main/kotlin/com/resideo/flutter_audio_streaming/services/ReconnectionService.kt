@@ -89,11 +89,9 @@ class ReconnectionService(
 
         // Clean up normally
         stopStream()
+        
+        // Store error for Mapper
+        streamingContext.lastError = reason
         mediator.transitionTo(StreamEvent.ReconnectionFailed)
-
-        // Send STOPPED event so UI knows we are done
-        mediator.runOnMainThread {
-            dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, reason)
-        }
     }
 }

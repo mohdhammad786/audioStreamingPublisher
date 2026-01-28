@@ -236,9 +236,7 @@ class InterruptionManager(
                 // Clear stack to prevent zombies? Or just fail?
                 // Typically we fail the stream.
                 
-                delegate.runOnMainThread {
-                     dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Stream stopped due to prolonged interruption")
-                }
+                context.lastError = "Stream stopped due to prolonged interruption"
                 delegate.transitionTo(StreamEvent.ReconnectionFailed)
                 
                 // Cleanup

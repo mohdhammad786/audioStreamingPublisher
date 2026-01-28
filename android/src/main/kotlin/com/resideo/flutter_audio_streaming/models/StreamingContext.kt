@@ -13,15 +13,13 @@ data class StreamingContext(
     var isInForeground: Boolean = false,
     var currentInterruptionSource: InterruptionSource = InterruptionSource.NONE,
     var reconnectionSource: InterruptionSource = InterruptionSource.NONE,
-    
-    // Volatile flags (Note: data classes don't support @Volatile on fields directly in the same way, 
-    // but we can wrap them or keep them in the main class if they need atomic access. 
-    // For now, let's keep volatile flags in the main class for thread safety or use AtomicBoolean here)
+    var lastError: String? = null
 ) {
     fun clear() {
         activeUrl = null
         pendingReconnectOnResume = false
         currentInterruptionSource = InterruptionSource.NONE
         reconnectionSource = InterruptionSource.NONE
+        lastError = null
     }
 }
