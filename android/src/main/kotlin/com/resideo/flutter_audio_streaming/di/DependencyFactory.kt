@@ -19,7 +19,7 @@ class DependencyFactory(
 
         val interruptionManager = InterruptionManager(streamingContext, messenger)
         val rtmpConnectionHandler = RtmpConnectionHandler(interruptionManager, messenger)
-        val rtmpClient = RtmpClientImpl(rtmpConnectionHandler)
+        val rtmpClient = RtmpClientImpl(context, rtmpConnectionHandler)
         rtmpConnectionHandler.setClient(rtmpClient)
 
         val systemLifecycleObserver = SystemLifecycleObserver()

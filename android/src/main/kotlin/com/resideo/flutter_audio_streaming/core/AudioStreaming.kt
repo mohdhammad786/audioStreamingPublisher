@@ -318,6 +318,13 @@ class AudioStreaming(
             streamingContext.isInForeground = true
             isActivityValid = true  // Activity is valid again
             
+            // Fix for false network interruption on wakeup:
+            // If we are flagged as Network Interrupted, but network is actually available, clear it.
+            if (streamingContext.currentInterruptionSource == InterruptionSource.NETWORK && networkMonitor.isNetworkAvailable) {
+                 Log.i(TAG, "Resumed with NETWORK interruption but network is available - clearing")
+                 interruptionManager.handleNetworkAvailable()
+            }
+
             interruptionManager.handleResumeFromInterruption(phoneCallManager.isCallActive)
         }
     }

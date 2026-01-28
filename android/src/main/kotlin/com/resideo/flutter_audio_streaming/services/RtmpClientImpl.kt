@@ -1,20 +1,39 @@
 package com.resideo.flutter_audio_streaming.services
 
-import com.pedro.rtplibrary.rtmp.RtmpOnlyAudio
-import com.pedro.rtmp.utils.ConnectCheckerRtmp
+import android.content.Context
+import android.media.MediaRecorder
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import com.haishinkit.media.MediaMixer
+import com.haishinkit.media.source.AudioRecordSource
+import com.haishinkit.rtmp.RtmpConnection
+import com.haishinkit.rtmp.RtmpStream
+import com.haishinkit.rtmp.event.Event
+import com.haishinkit.rtmp.event.IEventListener
 import com.resideo.flutter_audio_streaming.interfaces.StreamingClient
+import kotlinx.coroutines.runBlocking
 
-/**
- * Concrete implementation of StreamingClient using Pedro's RTMP-only audio client.
- *
- * This mirrors the previous RTSP client wrapper but swaps the underlying protocol implementation to RTMP.
- * The public API remains defined by StreamingClient, so business logic stays unchanged.
- */
-class RtmpClientImpl(checker: ConnectCheckerRtmp) : StreamingClient {
-    private val rtmpAudio = RtmpOnlyAudio(checker)
+class RtmpClientImpl(
+    private val context: Context,
+    private val handler: RtmpConnectionHandler
+) : StreamingClient, IEventListener {
+
+    private val connection = RtmpConnection()
+    private val stream = RtmpStream(context, connection)
+    private val mixer = MediaMixer(context)
+    private var streamingActive: Boolean = false
+    private var audioSource: AudioRecordSource? = null
+    private var lastUrl: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    init {
+        mixer.registerOutput(stream)
+        connection.addEventListener(Event.RTMP_STATUS, this)
+    }
 
     override val isStreaming: Boolean
-        get() = rtmpAudio.isStreaming
+        get() = streamingActive
 
     override fun prepareAudio(
         bitrate: Int,
@@ -23,33 +42,99 @@ class RtmpClientImpl(checker: ConnectCheckerRtmp) : StreamingClient {
         echoCanceler: Boolean,
         noiseSuppressor: Boolean
     ): Boolean {
-        return rtmpAudio.prepareAudio(
-            bitrate,
-            sampleRate,
-            isStereo,
-            echoCanceler,
-            noiseSuppressor
-        )
+        try {
+            val voiceCommSource = AudioRecordSource(context).apply {
+                audioSource = MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            }
+            val attachResult = runBlocking { mixer.attachAudio(0, voiceCommSource) }
+            if (attachResult.isFailure) {
+                Log.w("RtmpClientImpl", "VOICE_COMMUNICATION attach failed, falling back to MIC")
+                val micSource = AudioRecordSource(context).apply {
+                    audioSource = MediaRecorder.AudioSource.MIC
+                }
+                val fallbackResult = runBlocking { mixer.attachAudio(0, micSource) }
+                if (fallbackResult.isFailure) return false
+                audioSource = micSource
+            } else {
+                audioSource = voiceCommSource
+            }
+            stream.audioSetting.bitRate = bitrate
+            stream.audioSetting.sampleRate = sampleRate
+            stream.audioSetting.channelCount = if (isStereo) 2 else 1
+            stream.hasAudio = true
+            return true
+        } catch (e: Exception) {
+            Log.e("RtmpClientImpl", "Failed to prepare audio: ${e.message}", e)
+            return false
+        }
     }
 
     override fun startStream(url: String) {
-        rtmpAudio.startStream(url)
+        val lastSlash = url.lastIndexOf('/')
+        if (lastSlash == -1) {
+            Log.e("RtmpClientImpl", "Invalid URL: $url")
+            return
+        }
+        val baseUrl = url.substring(0, lastSlash)
+        val streamName = url.substring(lastSlash + 1)
+
+        lastUrl = url
+        connection.connect(baseUrl)
+        stream.publish(streamName)
+        streamingActive = true
     }
 
     override fun stopStream() {
-        rtmpAudio.stopStream()
+        try {
+            stream.close()
+        } catch (_: Throwable) {
+        }
+        connection.close()
+        streamingActive = false
     }
 
     override fun disableAudio() {
-        rtmpAudio.disableAudio()
+        stream.hasAudio = false
     }
 
     override fun enableAudio() {
-        rtmpAudio.enableAudio()
+        stream.hasAudio = true
     }
 
     override fun reTry(delay: Long, reason: String): Boolean {
-        return rtmpAudio.reTry(delay, reason)
+        val url = lastUrl
+        if (url == null) {
+            Log.e("RtmpClientImpl", "Cannot retry: No previous URL")
+            return false
+        }
+
+        Log.i("RtmpClientImpl", "Retrying stream in ${delay}ms. Reason: $reason")
+        
+        mainHandler.postDelayed({
+            stopStream()
+            startStream(url)
+        }, delay)
+        
+        return true
+    }
+
+    override fun handleEvent(event: Event) {
+        val data = event.data
+        if (data is Map<*, *>) {
+            val code = data["code"] as? String
+            if (code == null) return
+
+            when (code) {
+                "NetConnection.Connect.Success" -> handler.notifyConnected()
+                "NetConnection.Connect.Closed",
+                "NetConnection.Connect.Failed",
+                "NetConnection.Connect.Rejected" -> {
+                    streamingActive = false
+                    handler.notifyDisconnected()
+                }
+                "NetStream.Publish.BadName",
+                "NetStream.Publish.Rejected" -> handler.notifyAuthError(code)
+            }
+        }
     }
 }
-
