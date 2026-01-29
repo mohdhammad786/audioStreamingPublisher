@@ -81,7 +81,7 @@ class AudioFocusPermanentLossTest {
 
         interruptionManager = InterruptionManager(streamingContext, mockDartMessenger, mockHandler)
         
-        rtmpConnectionHandler = RtmpConnectionHandler(interruptionManager, mockDartMessenger)
+        rtmpConnectionHandler = RtmpConnectionHandler(interruptionManager, mockDartMessenger, streamingContext)
         rtmpConnectionHandler.setClient(mockClient)
         
         flutterEventMapper = FlutterEventMapper(mockDartMessenger, streamingContext, interruptionManager)

@@ -13,7 +13,11 @@ data class StreamingContext(
     var isInForeground: Boolean = false,
     var currentInterruptionSource: InterruptionSource = InterruptionSource.NONE,
     var reconnectionSource: InterruptionSource = InterruptionSource.NONE,
-    var lastError: String? = null
+    var lastError: String? = null,
+    
+    // Explicit flag to ignore disconnection events when we INTENTIONALLY stop stream (e.g. for interruption)
+    // This prevents race conditions where disconnect callbacks arrive before state transition completes
+    @Volatile var isExpectingSafetyDisconnect: Boolean = false
 ) {
     fun clear() {
         activeUrl = null
@@ -21,5 +25,6 @@ data class StreamingContext(
         currentInterruptionSource = InterruptionSource.NONE
         reconnectionSource = InterruptionSource.NONE
         lastError = null
+        isExpectingSafetyDisconnect = false
     }
 }

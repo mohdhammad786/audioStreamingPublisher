@@ -18,7 +18,7 @@ class DependencyFactory(
         val mainHandler = Handler(Looper.getMainLooper())
 
         val interruptionManager = InterruptionManager(streamingContext, messenger)
-        val rtmpConnectionHandler = RtmpConnectionHandler(interruptionManager, messenger)
+        val rtmpConnectionHandler = RtmpConnectionHandler(interruptionManager, messenger, streamingContext)
         val rtmpClient = RtmpClientImpl(context, rtmpConnectionHandler)
         rtmpConnectionHandler.setClient(rtmpClient)
 

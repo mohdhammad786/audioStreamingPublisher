@@ -300,9 +300,21 @@ class AudioStreaming(
 
     override fun stopStreamForInterruption() {
         try {
+            // Set flag BEFORE stopping to prevent racing disconnect callbacks from triggering RTMP_STOPPED
+            streamingContext.isExpectingSafetyDisconnect = true
+            Log.d(TAG, "Set isExpectingSafetyDisconnect=true before stopping for interruption")
+            
             rtmpAudio.stopStream()
             Log.d(TAG, "Stream stopped for interruption")
+            
+            // Reset flag after stop completes (disconnect callback may have fired synchronously)
+            // We keep the flag true briefly to catch any async callbacks that arrive later
+            mainHandler.postDelayed({
+                streamingContext.isExpectingSafetyDisconnect = false
+                Log.d(TAG, "Reset isExpectingSafetyDisconnect=false after delay")
+            }, 500)  // 500ms grace period for any async callbacks
         } catch (e: Throwable) {
+            streamingContext.isExpectingSafetyDisconnect = false
             Log.e(TAG, "Error stopping stream: ${e.message}")
         }
     }

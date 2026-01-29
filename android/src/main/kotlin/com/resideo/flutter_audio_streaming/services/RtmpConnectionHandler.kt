@@ -6,10 +6,12 @@ import com.resideo.flutter_audio_streaming.interfaces.StreamingClient
 import com.resideo.flutter_audio_streaming.interfaces.StreamingMediator
 import com.resideo.flutter_audio_streaming.models.StreamEvent
 import com.resideo.flutter_audio_streaming.models.StreamState
+import com.resideo.flutter_audio_streaming.models.StreamingContext
 
 class RtmpConnectionHandler(
     private val interruptionManager: InterruptionManager,
-    private val dartMessenger: DartMessenger?
+    private val dartMessenger: DartMessenger?,
+    private val streamingContext: StreamingContext
 ) {
 
     lateinit var mediator: StreamingMediator
@@ -40,6 +42,14 @@ class RtmpConnectionHandler(
         Log.i(TAG, "RTMP Connection Disconnected/Failed - Code: $code, Desc: $description")
 
         mediator.runOnMainThread {
+            // CRITICAL: Check if we are intentionally stopping the stream for an interruption.
+            // If so, ignore this disconnect callback to prevent race conditions that cause
+            // duplicate rtmp_stopped events or state corruption.
+            if (streamingContext.isExpectingSafetyDisconnect) {
+                Log.d(TAG, "Ignoring disconnect - isExpectingSafetyDisconnect is true (intentional stop for interruption)")
+                return@runOnMainThread
+            }
+            
             val currentState = mediator.getStreamState()
             Log.d(TAG, "Processing disconnect in state: $currentState")
 

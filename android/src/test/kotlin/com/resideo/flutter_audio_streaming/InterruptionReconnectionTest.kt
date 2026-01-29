@@ -71,7 +71,7 @@ class InterruptionReconnectionTest {
 
         interruptionManager = InterruptionManager(streamingContext, mockDartMessenger, mockHandler)
         
-        rtmpConnectionHandler = RtmpConnectionHandler(interruptionManager, mockDartMessenger)
+        rtmpConnectionHandler = RtmpConnectionHandler(interruptionManager, mockDartMessenger, streamingContext)
         rtmpConnectionHandler.setClient(mockClient) // Hook mock client
         
         flutterEventMapper = FlutterEventMapper(mockDartMessenger, streamingContext, interruptionManager)
