@@ -53,45 +53,28 @@ class RtmpConnectionHandler(
             val currentState = mediator.getStreamState()
             Log.d(TAG, "Processing disconnect in state: $currentState")
 
-            // Add FAILED state check - if already failed, don't process
+            // If already in terminal state, ignore
             if (currentState == StreamState.FAILED || currentState == StreamState.IDLE) {
                 Log.d(TAG, "Already in terminal state $currentState - ignoring disconnect")
                 return@runOnMainThread
             }
 
-            // 1. If we are already INTERRUPTED, this disconnection is likely due to us stopping the stream
-            //    or network loss that triggered the interruption. We should ignore it to preserve the
-            //    INTERRUPTED state so we can resume later.
+            // If already INTERRUPTED, ignore - let 30s timer handle final stop
             if (currentState == StreamState.INTERRUPTED) {
-                Log.d(TAG, "Disconnected while INTERRUPTED - ignoring to preserve state for resumption")
+                Log.d(TAG, "Disconnected while INTERRUPTED - ignoring to preserve state for 30s timer")
                 return@runOnMainThread
             }
             
-            // If a reconnection attempt just started, ignore any immediate disconnects to avoid
-            // prematurely failing the stream while reconnect is in progress.
+            // If reconnecting, ignore - let ReconnectionService handle result
             if (currentState == StreamState.RECONNECTING) {
-                Log.d(TAG, "Disconnected while RECONNECTING - waiting for reconnection result")
+                Log.d(TAG, "Disconnected while RECONNECTING - letting ReconnectionService handle")
                 return@runOnMainThread
             }
 
-            // 2. If we were streaming, assume network interruption first
-            // This catches the case where the socket breaks (e.g. internet off) but we want to retry
-            if (currentState == StreamState.STREAMING) {
-                 Log.w(TAG, "Disconnected while $currentState - treating as Network Interruption")
-                 interruptionManager.handleNetworkLost()
-                 return@runOnMainThread
-            }
- 
-            // Check for network-related errors to trigger interruption instead of failure
-            if (description != null && isNetworkRelatedError(description)) {
-                Log.w(TAG, "Network error detected from RTMP: $description - Treating as Network Interruption")
-                interruptionManager.handleNetworkLost()
-                return@runOnMainThread
-            }
- 
-            if (currentState != StreamState.IDLE) {
-                mediator.transitionTo(StreamEvent.ReconnectionFailed)
-            }
+            // ALL other disconnects should be treated as network interruption
+            // The 30s timer will send rtmp_stopped if not resumed in time
+            Log.w(TAG, "Disconnected while $currentState - treating as Network Interruption")
+            interruptionManager.handleNetworkLost()
         }
     }
 

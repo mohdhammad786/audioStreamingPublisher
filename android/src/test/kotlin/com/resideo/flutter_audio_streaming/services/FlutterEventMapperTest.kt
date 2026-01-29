@@ -76,7 +76,8 @@ class FlutterEventMapperTest {
     fun `test Failure sends RTMP_STOPPED with error`() {
         streamingContext.lastError = "Connection timed out"
         
-        eventMapper.handleStateTransition(StreamState.PREPARING, StreamState.FAILED, StreamEvent.StartFailed)
+        // Only TimeoutExpired transitions to FAILED and sends RTMP_STOPPED
+        eventMapper.handleStateTransition(StreamState.INTERRUPTED, StreamState.FAILED, StreamEvent.TimeoutExpired)
         
         verify(mockDartMessenger).send(eq(DartMessenger.EventType.RTMP_STOPPED), eq("Connection timed out"))
         assert(streamingContext.lastError == null) // Should clear error

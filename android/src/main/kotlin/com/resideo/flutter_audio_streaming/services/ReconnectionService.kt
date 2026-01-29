@@ -102,8 +102,9 @@ class ReconnectionService(
         try { client.stopStream() } catch (_: Exception) {}
         try { audioFocusManager.abandonFocus() } catch (_: Exception) {}
         
-        // Store error for Mapper
-        streamingContext.lastError = reason
+        // Transition to ReconnectionFailed - per new state machine, this returns to INTERRUPTED
+        // The 30s timer will eventually send TimeoutExpired -> FAILED -> rtmp_stopped
+        Log.i(TAG, "Transitioning to ReconnectionFailed (will return to INTERRUPTED, timer will handle)")
         mediator.transitionTo(StreamEvent.ReconnectionFailed)
     }
 }

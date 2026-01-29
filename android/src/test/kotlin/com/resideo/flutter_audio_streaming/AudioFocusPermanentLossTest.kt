@@ -351,9 +351,9 @@ class AudioFocusPermanentLossTest {
     fun `test FlutterEventMapper prevents duplicate stop events`() {
         // Test the deduplication logic directly
         
-        // Simulate streaming state
+        // Simulate streaming state with TimeoutExpired (only event that sends RTMP_STOPPED to FAILED)
         streamingContext.lastError = "First error"
-        flutterEventMapper.handleStateTransition(StreamState.STREAMING, StreamState.FAILED, StreamEvent.ReconnectionFailed)
+        flutterEventMapper.handleStateTransition(StreamState.INTERRUPTED, StreamState.FAILED, StreamEvent.TimeoutExpired)
         
         verify(mockDartMessenger, times(1)).send(eq(DartMessenger.EventType.RTMP_STOPPED), anyString())
         
@@ -367,9 +367,9 @@ class AudioFocusPermanentLossTest {
 
     @Test
     fun `test FlutterEventMapper reset allows new stop event after streaming resumes`() {
-        // First stop event
+        // First stop event (only TimeoutExpired sends RTMP_STOPPED to FAILED)
         streamingContext.lastError = "Error 1"
-        flutterEventMapper.handleStateTransition(StreamState.STREAMING, StreamState.FAILED, StreamEvent.ReconnectionFailed)
+        flutterEventMapper.handleStateTransition(StreamState.INTERRUPTED, StreamState.FAILED, StreamEvent.TimeoutExpired)
         verify(mockDartMessenger, times(1)).send(eq(DartMessenger.EventType.RTMP_STOPPED), anyString())
         
         // Reset (simulating a new stream start)
@@ -378,9 +378,9 @@ class AudioFocusPermanentLossTest {
         // Now streaming started again
         flutterEventMapper.handleStateTransition(StreamState.IDLE, StreamState.STREAMING, StreamEvent.StartSuccess)
         
-        // Second stop event should work
+        // Second stop event should work (using TimeoutExpired)
         streamingContext.lastError = "Error 2"
-        flutterEventMapper.handleStateTransition(StreamState.STREAMING, StreamState.FAILED, StreamEvent.ReconnectionFailed)
+        flutterEventMapper.handleStateTransition(StreamState.INTERRUPTED, StreamState.FAILED, StreamEvent.TimeoutExpired)
         
         // Now we should have 2 total
         verify(mockDartMessenger, times(2)).send(eq(DartMessenger.EventType.RTMP_STOPPED), anyString())

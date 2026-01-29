@@ -146,10 +146,16 @@ class InterruptionManager(
         }
         context.currentInterruptionSource = effectiveSource
 
+
         // 3. Handle Transitions
         if (effectiveSource != InterruptionSource.NONE) {
             if (delegate.getStreamState() != StreamState.INTERRUPTED) {
                 try {
+                    // CRITICAL FIX: Set safety flag BEFORE any operations that could trigger disconnect
+                    // This prevents race conditions where disconnect callback fires before state changes
+                    context.isExpectingSafetyDisconnect = true
+                    Log.d(TAG, "Set isExpectingSafetyDisconnect=true BEFORE interruption handling")
+                    
                     val transitioned = delegate.transitionTo(StreamEvent.InterruptionBegan)
                     if (transitioned) {
                         try {
@@ -162,7 +168,14 @@ class InterruptionManager(
                         
                         // Event is sent by StreamStateMachine -> FlutterEventMapper upon state transition
                     }
+                    
+                    // Reset flag after a delay to catch any async disconnect callbacks
+                    mainHandler.postDelayed({
+                        context.isExpectingSafetyDisconnect = false
+                        Log.d(TAG, "Reset isExpectingSafetyDisconnect=false after delay in InterruptionManager")
+                    }, 500)
                 } catch (e: Throwable) {
+                    context.isExpectingSafetyDisconnect = false
                     Log.e(TAG, "Error handling interruption began: ${e.message}")
                 }
             }
@@ -223,7 +236,7 @@ class InterruptionManager(
                 Log.w(TAG, "❌ Interruption timeout expired (source=${context.currentInterruptionSource})")
                 
                 context.lastError = "Stream stopped due to prolonged interruption"
-                delegate.transitionTo(StreamEvent.ReconnectionFailed)
+                delegate.transitionTo(StreamEvent.TimeoutExpired)  // Use TimeoutExpired, not ReconnectionFailed
                 
                 // Cleanup - DON'T call updateStateAndTimer() after FAILED transition
                 // as it would potentially trigger another state change and duplicate events

@@ -11,6 +11,7 @@ sealed class StreamEvent {
     object InterruptionEnded : StreamEvent()
     object ReconnectionStarted : StreamEvent()
     object ReconnectionSuccess : StreamEvent()
-    object ReconnectionFailed : StreamEvent()
+    object ReconnectionFailed : StreamEvent()  // Internal retry failure - stays INTERRUPTED
+    object TimeoutExpired : StreamEvent()      // 30s timeout expired - sends rtmp_stopped
     object ExplicitStop : StreamEvent()
 }

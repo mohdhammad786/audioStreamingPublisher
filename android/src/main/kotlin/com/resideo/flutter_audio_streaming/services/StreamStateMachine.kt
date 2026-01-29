@@ -47,7 +47,12 @@ class StreamStateMachine(private val onTransition: (oldState: StreamState, newSt
                 StreamEvent.ReconnectionSuccess -> {
                     if (oldState == StreamState.RECONNECTING || oldState == StreamState.INTERRUPTED) StreamState.STREAMING else null
                 }
-                StreamEvent.ReconnectionFailed -> StreamState.FAILED
+                // ReconnectionFailed: Internal retry failure - go back to INTERRUPTED, let 30s timer handle final stop
+                StreamEvent.ReconnectionFailed -> {
+                    if (oldState == StreamState.RECONNECTING) StreamState.INTERRUPTED else null
+                }
+                // TimeoutExpired: 30s timeout - this is the ONLY failure that should send rtmp_stopped
+                StreamEvent.TimeoutExpired -> StreamState.FAILED
                 
                 StreamEvent.ExplicitStop -> StreamState.IDLE
             }

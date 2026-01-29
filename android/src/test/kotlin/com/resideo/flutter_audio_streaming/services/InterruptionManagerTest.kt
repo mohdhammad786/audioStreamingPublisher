@@ -270,7 +270,7 @@ class InterruptionManagerTest {
         captor.value.run()
         
         // Assert
-        verify(mockDelegate).transitionTo(StreamEvent.ReconnectionFailed)
+        verify(mockDelegate).transitionTo(StreamEvent.TimeoutExpired)  // Changed from ReconnectionFailed
         assert(streamingContext.lastError == "Stream stopped due to prolonged interruption")
         
         // Verify stack cleared
@@ -288,10 +288,11 @@ class InterruptionManagerTest {
         verify(mockHandler, times(1)).postDelayed(any(Runnable::class.java), eq(30000L))
         
         // 2. Add Phone Interruption (Higher priority, also has 30s timer)
-        // Should NOT start a new timer because one is already running
+        // Should NOT start a new 30s timer because one is already running
         interruptionManager.handlePhoneInterruptionBegan()
         
-        // Verify postDelayed was NOT called again (total times still 1)
-        verify(mockHandler, times(1)).postDelayed(any(Runnable::class.java), anyLong())
+        // Verify 30s timer was NOT called again (total times still 1)
+        // Note: 500ms postDelayed calls for safety flag reset are separate
+        verify(mockHandler, times(1)).postDelayed(any(Runnable::class.java), eq(30000L))
     }
 }
