@@ -173,18 +173,24 @@ class AudioStreaming(
     // --- Streaming Control ---
 
     fun startStreaming(url: String?, result: MethodChannel.Result?) {
-        Log.d(TAG, "startStreaming: $url")
+        Log.i(TAG, "=== START STREAMING CALLED ===")
+        Log.i(TAG, "startStreaming: url=$url")
+        
         if (url == null) {
+            Log.e(TAG, "startStreaming: URL is null")
             result?.error("StartAudioStreaming", "Must specify a url.", null)
             return
         }
 
         // Check for active call
+        Log.d(TAG, "startStreaming: Checking for active call...")
         try {
             if (phoneCallManager.isCallActive) {
+                Log.w(TAG, "startStreaming: Phone call active, rejecting")
                 result?.error("PHONE_CALL_ACTIVE", "Cannot start streaming during an active call", null)
                 return
             }
+            Log.d(TAG, "startStreaming: No active call")
         } catch (e: SecurityException) {
             Log.w(TAG, "READ_PHONE_STATE permission missing, assuming no active call")
         } catch (e: Exception) {
@@ -192,19 +198,33 @@ class AudioStreaming(
         }
 
         // Request Audio Focus
+        Log.d(TAG, "startStreaming: Requesting audio focus...")
         if (!audioFocusManager.requestFocus()) {
-             result?.error("AUDIO_FOCUS_DENIED", "Cannot acquire audio focus", null)
-             return
+            Log.e(TAG, "startStreaming: Audio focus denied")
+            result?.error("AUDIO_FOCUS_DENIED", "Cannot acquire audio focus", null)
+            return
         }
+        Log.d(TAG, "startStreaming: Audio focus acquired")
 
+        Log.d(TAG, "startStreaming: Launching coroutine...")
         scope.launch {
             try {
+                Log.d(TAG, "startStreaming: Inside coroutine, isStreaming=${rtmpAudio.isStreaming}")
                 if (!rtmpAudio.isStreaming) {
-                    if (prepareInternal()) {
+                    Log.d(TAG, "startStreaming: Calling prepareInternal()...")
+                    val prepared = prepareInternal()
+                    Log.d(TAG, "startStreaming: prepareInternal() returned: $prepared")
+                    
+                    if (prepared) {
+                        Log.d(TAG, "startStreaming: Transitioning to StartRequested")
                         transitionTo(StreamEvent.StartRequested)
+                        
+                        Log.d(TAG, "startStreaming: Calling rtmpAudio.startStream()")
                         rtmpAudio.startStream(url)
+                        Log.d(TAG, "startStreaming: rtmpAudio.startStream() called")
                         
                         // Start Foreground Service to keep alive in background
+                        Log.d(TAG, "startStreaming: Starting foreground service")
                         AudioStreamingForegroundService.start(applicationContext)
                         
                         // Reset Interruption Flags for clean start
@@ -214,6 +234,7 @@ class AudioStreaming(
                         streamingContext.activeUrl = url // Persist URL for reconnection
                         
                         // Start Services & Listeners
+                        Log.d(TAG, "startStreaming: Starting monitors")
                         phoneCallManager.startMonitoring()
                         networkMonitor.startMonitoring()
                         application?.registerActivityLifecycleCallbacks(systemLifecycleObserver)
@@ -221,17 +242,20 @@ class AudioStreaming(
 
                         val ret = hashMapOf<String, Any>()
                         ret["url"] = url
+                        Log.i(TAG, "=== START STREAMING SUCCESS - returning result ===")
                         result?.success(ret)
                     } else {
+                        Log.e(TAG, "startStreaming: prepareInternal() FAILED")
                         audioFocusManager.abandonFocus()
                         transitionTo(StreamEvent.StartFailed)
                         result?.error("AudioStreamingFailed", "Error preparing stream", null)
                     }
                 } else {
-                     Log.w(TAG, "Already streaming, ignoring start request")
-                     result?.success(null)
+                    Log.w(TAG, "Already streaming, ignoring start request")
+                    result?.success(null)
                 }
             } catch (e: Exception) {
+                Log.e(TAG, "startStreaming: EXCEPTION: ${e.message}", e)
                 audioFocusManager.abandonFocus()
                 result?.error("AudioStreamingFailed", e.message, null)
             }
