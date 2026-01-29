@@ -328,6 +328,7 @@ class AudioStreaming(
 
     override fun onActivityResumed(activity: Activity) {
         if (activity === this.activity) {
+            Log.i(TAG, "📱 Activity Resumed - current state: $currentState, source: ${streamingContext.currentInterruptionSource}")
             streamingContext.isInForeground = true
             isActivityValid = true  // Activity is valid again
             
@@ -338,6 +339,49 @@ class AudioStreaming(
                  interruptionManager.handleNetworkAvailable()
             }
 
+            // PROACTIVE AUDIO FOCUS RECOVERY (iOS Parity)
+            // When app comes to foreground while interrupted, check if we can resume.
+            // This handles cases where AUDIOFOCUS_GAIN was never received from the system
+            // (e.g., music app exits without explicitly releasing focus).
+            if (currentState == StreamState.INTERRUPTED) {
+                val currentSource = streamingContext.currentInterruptionSource
+                Log.i(TAG, "📱 Proactive resume check scheduled (interrupted by $currentSource)")
+                
+                mainHandler.postDelayed({
+                    // Re-check state after delay (let previous app release resources)
+                    if (currentState != StreamState.INTERRUPTED) {
+                        Log.d(TAG, "📱 State changed during proactive delay - aborting")
+                        return@postDelayed
+                    }
+                    
+                    Log.i(TAG, "📱 Executing proactive resume check")
+                    
+                    // Check if there's an actual phone call
+                    val hasActiveCall = try { 
+                        phoneCallManager.isCallActive 
+                    } catch (_: Exception) { 
+                        false 
+                    }
+                    
+                    if (hasActiveCall) {
+                        Log.i(TAG, "📱 Phone call still active - not resuming")
+                        return@postDelayed
+                    }
+                    
+                    // For PHONE_CALL interruption source (which includes audio focus loss):
+                    // Try to acquire audio focus - if successful, we can resume
+                    if (currentSource == InterruptionSource.PHONE_CALL || 
+                        currentSource == InterruptionSource.SYSTEM_RESOURCE) {
+                        if (audioFocusManager.requestFocus()) {
+                            Log.i(TAG, "📱 Audio focus acquired - triggering resume")
+                            interruptionManager.handlePhoneInterruptionEnded()
+                        } else {
+                            Log.w(TAG, "📱 Failed to acquire audio focus - cannot resume yet")
+                        }
+                    }
+                }, 500)  // 500ms delay to let previous app release resources
+            }
+            
             interruptionManager.handleResumeFromInterruption(phoneCallManager.isCallActive)
         }
     }

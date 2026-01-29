@@ -36,6 +36,9 @@ class InterruptionManager(
     private var interruptionDeadlineMs: Long = 0L
     private val mainHandler = handler
     private var interruptionRunnable: Runnable? = null
+    
+    // Track actual interruption start time for accurate countdown
+    private var interruptionStartedAt: Long = 0L
 
     // Phone Call Interruption Handlers
     fun handlePhoneInterruptionBegan() {
@@ -83,6 +86,12 @@ class InterruptionManager(
             Log.w(TAG, "Delegate not initialized; ignoring interruption began: $source")
             return
         }
+        
+        // Record start time if this is the first interruption in the stack
+        if (interruptions.isEmpty()) {
+            interruptionStartedAt = System.currentTimeMillis()
+        }
+        
         synchronized(lock) {
             val interruption = when (source) {
                 InterruptionSource.PHONE_CALL -> PhoneCallInterruption()
@@ -240,9 +249,10 @@ class InterruptionManager(
     
     // Helper for UI
     fun getRemainingInterruptionSeconds(): Int {
-        if (interruptionDeadlineMs == 0L) return 0
-        val now = System.currentTimeMillis()
-        return ((interruptionDeadlineMs - now) / 1000).toInt().coerceAtLeast(0)
+        if (interruptionStartedAt == 0L) return 30 // Default start
+        val elapsed = System.currentTimeMillis() - interruptionStartedAt
+        val totalTimeoutMs = 30000L
+        return ((totalTimeoutMs - elapsed) / 1000).toInt().coerceIn(0, 30)
     }
 
     // Deprecated / Removed old boolean flags fields
@@ -286,6 +296,7 @@ class InterruptionManager(
         synchronized(lock) {
             cancelInterruptionTimeout()
             interruptions.clear()
+            interruptionStartedAt = 0L
             context.currentInterruptionSource = InterruptionSource.NONE
             context.reconnectionSource = InterruptionSource.NONE
             Log.i(TAG, "Reset - Cleared all interruptions")

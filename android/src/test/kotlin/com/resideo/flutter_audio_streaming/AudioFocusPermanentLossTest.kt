@@ -287,6 +287,67 @@ class AudioFocusPermanentLossTest {
     }
 
     @Test
+    fun `test proactive resume on activity resumed when AUDIOFOCUS_GAIN never received`() = runBlocking {
+        // This test simulates the REAL bug scenario:
+        // 1. User starts streaming
+        // 2. User minimizes app, music plays (AUDIOFOCUS_LOSS)
+        // 3. User pauses music and returns to app
+        // 4. AUDIOFOCUS_GAIN is NEVER received
+        // 5. onActivityResumed should proactively resume
+
+        // 1. Start Streaming
+        whenever(mockClient.prepareAudio(any(), any(), any(), any(), any())).thenReturn(true)
+        whenever(mockClient.isStreaming).thenReturn(false)
+        whenever(mockAudioFocus.requestFocus()).thenReturn(true)
+
+        audioStreaming.startStreaming("rtmp://test", null)
+        rtmpConnectionHandler.notifyConnected()
+        
+        assert(audioStreaming.getStreamState() == StreamState.STREAMING)
+
+        // 2. Music takes focus (permanent loss)
+        audioStreaming.onAudioFocusLostPermanently()
+        assert(audioStreaming.getStreamState() == StreamState.INTERRUPTED)
+        verify(mockDartMessenger).send(eq(DartMessenger.EventType.AUDIO_INTERRUPTED), anyString(), any())
+
+        // 3. Simulate RTMP disconnect callback (happens in reality)
+        rtmpConnectionHandler.notifyDisconnected("NetConnection.Connect.Closed", null)
+        
+        // State should STILL be INTERRUPTED (not FAILED)
+        assert(audioStreaming.getStreamState() == StreamState.INTERRUPTED)
+
+        // 4. User returns to app - AUDIOFOCUS_GAIN IS NEVER RECEIVED
+        // But onActivityResumed is called
+        
+        // Simulate onActivityResumed triggering proactive resume
+        // mockActivity is already set in setup() via audioStreaming constructor helper, but let's be explicit
+        val mockActivityInstance = mock(android.app.Activity::class.java)
+        audioStreaming.setActivity(mockActivityInstance)
+        
+        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        audioStreaming.onActivityResumed(mockActivityInstance)
+        
+        // Capture the 500ms proactive resume delay
+        verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(500L))
+        runnableCaptor.allValues.last().run()
+        
+        // Should trigger reconnection
+        // Capture the 1000ms reconnection delay (from InterruptionManager -> handlePhoneInterruptionEnded -> ReconnectionService)
+        // Note: The loop might be handled by InterruptionManager, which calls reconnectStream() directly if no delay.
+        // InterruptionManager logic:
+        // handlePhoneInterruptionEnded() -> delegate.reconnectStream() -> ReconnectionService.reconnectStream() -> 1000ms delay
+        verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
+        runnableCaptor.allValues.last().run()
+
+        // 5. RTMP Reconnects
+        rtmpConnectionHandler.notifyConnected()
+        
+        // 6. Verify Resumed
+        assert(audioStreaming.getStreamState() == StreamState.STREAMING)
+        verify(mockDartMessenger).send(eq(DartMessenger.EventType.AUDIO_RESUMED), anyString())
+    }
+
+    @Test
     fun `test FlutterEventMapper prevents duplicate stop events`() {
         // Test the deduplication logic directly
         

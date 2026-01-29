@@ -41,6 +41,13 @@ class RtmpConnectionHandler(
 
         mediator.runOnMainThread {
             val currentState = mediator.getStreamState()
+            Log.d(TAG, "Processing disconnect in state: $currentState")
+
+            // Add FAILED state check - if already failed, don't process
+            if (currentState == StreamState.FAILED || currentState == StreamState.IDLE) {
+                Log.d(TAG, "Already in terminal state $currentState - ignoring disconnect")
+                return@runOnMainThread
+            }
 
             // 1. If we are already INTERRUPTED, this disconnection is likely due to us stopping the stream
             //    or network loss that triggered the interruption. We should ignore it to preserve the
