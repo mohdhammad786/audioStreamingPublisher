@@ -49,7 +49,14 @@ class ReconnectionService(
         mainHandler.postDelayed({
             // Re-check state after delay
             if (streamingContext.currentInterruptionSource != InterruptionSource.NONE || mediator.getStreamState() != StreamState.INTERRUPTED) {
-                Log.w(TAG, "Reconnection aborted - state changed during delay")
+                Log.w(TAG, "Reconnection aborted - state changed during delay (state=${mediator.getStreamState()}, source=${streamingContext.currentInterruptionSource})")
+                // If we're in RECONNECTING state but conditions changed, we need to handle it properly
+                val currentState = mediator.getStreamState()
+                if (currentState == StreamState.RECONNECTING) {
+                    // Another interruption happened during our delay - this is handled by InterruptionManager
+                    Log.d(TAG, "State is RECONNECTING with new interruption - letting InterruptionManager handle it")
+                }
+                // For other states (IDLE, FAILED, STREAMING), the state machine already handled the transition
                 return@postDelayed
             }
 

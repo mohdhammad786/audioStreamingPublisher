@@ -1,5 +1,6 @@
 package com.resideo.flutter_audio_streaming.services
 
+import android.util.Log
 import com.resideo.flutter_audio_streaming.utils.DartMessenger
 import com.resideo.flutter_audio_streaming.models.InterruptionSource
 import com.resideo.flutter_audio_streaming.models.StreamEvent
@@ -11,12 +12,21 @@ class FlutterEventMapper(
     private val streamingContext: StreamingContext,
     private val interruptionManager: InterruptionManager
 ) {
+    companion object {
+        private const val TAG = "FlutterEventMapper"
+    }
+
+    // Guard against duplicate RTMP_STOPPED events
+    private var lastSentStopEvent = false
 
     fun handleStateTransition(oldState: StreamState, newState: StreamState, event: StreamEvent) {
         if (oldState == newState) return // Prevent duplicate events for same-state transitions
 
         when (newState) {
             StreamState.STREAMING -> {
+                // Reset stop event guard when streaming starts/resumes
+                lastSentStopEvent = false
+                
                 if (event == StreamEvent.ReconnectionSuccess) {
                     val eventType = when (streamingContext.reconnectionSource) {
                         InterruptionSource.NETWORK -> DartMessenger.EventType.NETWORK_RESUMED
@@ -39,18 +49,35 @@ class FlutterEventMapper(
                 dartMessenger?.send(eventType, "Stream paused due to ${streamingContext.currentInterruptionSource}", extras)
             }
             StreamState.FAILED -> {
+                if (lastSentStopEvent) {
+                    Log.d(TAG, "Suppressing duplicate RTMP_STOPPED event (transition to FAILED)")
+                    return
+                }
                 val error = streamingContext.lastError ?: "Stream connection failed"
                 dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, error)
+                lastSentStopEvent = true
                 streamingContext.lastError = null
             }
             StreamState.IDLE -> {
                  if (event == StreamEvent.ExplicitStop) {
+                     if (lastSentStopEvent) {
+                         Log.d(TAG, "Suppressing duplicate RTMP_STOPPED event (transition to IDLE)")
+                         return
+                     }
                      dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Stream stopped")
+                     lastSentStopEvent = true
                  }
             }
             else -> {
                 // Other states don't necessarily trigger events
             }
         }
+    }
+    
+    /**
+     * Reset the event mapper state. Call this when starting a new stream.
+     */
+    fun reset() {
+        lastSentStopEvent = false
     }
 }

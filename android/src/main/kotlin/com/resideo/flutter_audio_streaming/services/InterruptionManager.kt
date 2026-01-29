@@ -212,16 +212,16 @@ class InterruptionManager(
         interruptionRunnable = Runnable {
             synchronized(lock) {
                 Log.w(TAG, "❌ Interruption timeout expired (source=${context.currentInterruptionSource})")
-                // Clear stack to prevent zombies? Or just fail?
-                // Typically we fail the stream.
                 
                 context.lastError = "Stream stopped due to prolonged interruption"
                 delegate.transitionTo(StreamEvent.ReconnectionFailed)
                 
-                // Cleanup
+                // Cleanup - DON'T call updateStateAndTimer() after FAILED transition
+                // as it would potentially trigger another state change and duplicate events
                 interruptions.clear()
                 cancelInterruptionTimeout()
-                updateStateAndTimer()
+                context.currentInterruptionSource = InterruptionSource.NONE
+                context.reconnectionSource = InterruptionSource.NONE
             }
         }
         
