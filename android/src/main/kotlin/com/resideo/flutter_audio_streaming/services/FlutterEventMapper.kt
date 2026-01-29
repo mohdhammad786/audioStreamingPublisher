@@ -20,7 +20,11 @@ class FlutterEventMapper(
     private var lastSentStopEvent = false
 
     fun handleStateTransition(oldState: StreamState, newState: StreamState, event: StreamEvent) {
-        if (oldState == newState) return // Prevent duplicate events for same-state transitions
+        Log.i(TAG, "📊 State Transition: $oldState --($event)--> $newState")  // ADD THIS
+        if (oldState == newState) {
+            Log.d(TAG, "Same state, skipping")
+            return
+        }
 
         when (newState) {
             StreamState.STREAMING -> {
@@ -44,13 +48,18 @@ class FlutterEventMapper(
                     val eventType = when (streamingContext.currentInterruptionSource) {
                         InterruptionSource.PHONE_CALL -> DartMessenger.EventType.AUDIO_INTERRUPTED
                         InterruptionSource.NETWORK -> DartMessenger.EventType.NETWORK_INTERRUPTED
-                        else -> return
+                        else -> {
+                            Log.w(TAG, "Unknown interruption source: ${streamingContext.currentInterruptionSource}")
+                            return
+                        }
                     }
                     val remaining = interruptionManager.getRemainingInterruptionSeconds()
                     val extras = mapOf("remainingSeconds" to remaining)
+                    Log.i(TAG, "📤 Sending $eventType to Flutter (remaining: ${remaining}s)")
                     dartMessenger?.send(eventType, "Stream paused due to ${streamingContext.currentInterruptionSource}", extras)
+                } else {
+                    Log.d(TAG, "Transition to INTERRUPTED via $event - not sending event")
                 }
-                // If event is ReconnectionFailed, silently return to INTERRUPTED - no event to Flutter
             }
             StreamState.FAILED -> {
                 // CRITICAL: Only send RTMP_STOPPED on TimeoutExpired (30s timer), NOT on internal failures
@@ -63,16 +72,19 @@ class FlutterEventMapper(
                     return
                 }
                 val error = streamingContext.lastError ?: "Stream stopped due to timeout"
+                Log.i(TAG, "📤 Sending RTMP_STOPPED (FAILED via TimeoutExpired): $error")
                 dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, error)
                 lastSentStopEvent = true
                 streamingContext.lastError = null
             }
             StreamState.IDLE -> {
+                Log.d(TAG, "Transition to IDLE via $event, lastSentStopEvent=$lastSentStopEvent")
                  if (event == StreamEvent.ExplicitStop) {
                      if (lastSentStopEvent) {
                          Log.d(TAG, "Suppressing duplicate RTMP_STOPPED event (transition to IDLE)")
                          return
                      }
+                     Log.i(TAG, "📤 Sending RTMP_STOPPED (IDLE via ExplicitStop)")
                      dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Stream stopped")
                      lastSentStopEvent = true
                  }

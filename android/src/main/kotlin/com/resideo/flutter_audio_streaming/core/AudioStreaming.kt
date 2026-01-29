@@ -270,6 +270,15 @@ class AudioStreaming(
                 result?.success(null)
                 return
             }
+            
+            // CRITICAL FIX: If we're in INTERRUPTED state (e.g., music playing),
+            // don't process stop request - let the 30s timer handle the final stop.
+            // This prevents the client's redundant stop() call from sending rtmp_stopped prematurely.
+            if (currentState == StreamState.INTERRUPTED || currentState == StreamState.RECONNECTING) {
+                Log.w(TAG, "⚠️ Ignoring stopStreaming during $currentState - timer will handle final stop")
+                result?.success(null)
+                return
+            }
 
             interruptionManager.reset()
             streamingContext.pendingReconnectOnResume = false
