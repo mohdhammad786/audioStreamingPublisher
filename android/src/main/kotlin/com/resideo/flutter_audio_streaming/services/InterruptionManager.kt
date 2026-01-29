@@ -6,10 +6,11 @@ import android.util.Log
 import com.resideo.flutter_audio_streaming.models.*
 import com.resideo.flutter_audio_streaming.utils.DartMessenger
 
-interface InterruptionDelegate {
+    interface InterruptionDelegate {
     fun stopStreamForInterruption()
     fun reconnectStream()
     fun abandonAudioFocus()
+    fun tryAcquireAudioFocus(): Boolean
     fun transitionTo(event: StreamEvent): Boolean
     fun getStreamState(): StreamState
     fun runOnMainThread(block: () -> Unit)
@@ -26,6 +27,7 @@ class InterruptionManager(
         private const val TAG = "InterruptionManager"
         private const val NETWORK_INTERRUPTION_TIMEOUT_MS = 30000L
         private const val SYSTEM_INTERRUPTION_TIMEOUT_MS = 30000L // 30s timeout for Camera/Phone
+        private const val FOCUS_POLLING_INTERVAL_MS = 2000L // Poll every 2s
     }
 
     // Professional Stack-based storage
@@ -36,6 +38,174 @@ class InterruptionManager(
     private var interruptionDeadlineMs: Long = 0L
     private val mainHandler = handler
     private var interruptionRunnable: Runnable? = null
+    private var focusPollingRunnable: Runnable? = null
+    
+    // ... (rest of class)
+
+    // ... inside handleInterruptionBeganInternal ...
+    private fun handleInterruptionBeganInternal(source: InterruptionSource) {
+        if (!::delegate.isInitialized) {
+            Log.w(TAG, "Delegate not initialized; ignoring interruption began: $source")
+            return
+        }
+        
+        // Record start time if this is the first interruption in the stack
+        if (interruptions.isEmpty()) {
+            interruptionStartedAt = System.currentTimeMillis()
+        }
+        
+        synchronized(lock) {
+            val interruption = when (source) {
+                InterruptionSource.PHONE_CALL -> PhoneCallInterruption()
+                InterruptionSource.NETWORK -> NetworkInterruption()
+                InterruptionSource.SYSTEM_RESOURCE -> SystemResourceInterruption()
+                else -> return
+            }
+
+            // Check for duplicates
+            if (interruptions.none { it.source == source }) {
+                interruptions.add(interruption)
+                Log.i(TAG, "⏸️ Added $interruption - Stack: ${interruptions.map { it.source }}")
+                
+                // Start polling if Phone or System interruption
+                if (source == InterruptionSource.PHONE_CALL || source == InterruptionSource.SYSTEM_RESOURCE) {
+                    startAudioFocusPolling()
+                }
+            } else {
+                Log.d(TAG, "⏸️ $source already in stack - ignoring duplicate")
+            }
+
+            updateStateAndTimer()
+        }
+    }
+
+    private fun handleInterruptionEndedInternal(source: InterruptionSource) {
+        if (!::delegate.isInitialized) {
+            Log.w(TAG, "Delegate not initialized; ignoring interruption ended: $source")
+            return
+        }
+        synchronized(lock) {
+            val removed = interruptions.removeIf { it.source == source }
+            if (removed) {
+                Log.i(TAG, "⏸️ Removed $source - Stack: ${interruptions.map { it.source }}")
+                // Stop polling if no more Phone/System interruptions
+                if (interruptions.none { it.source == InterruptionSource.PHONE_CALL || it.source == InterruptionSource.SYSTEM_RESOURCE }) {
+                    stopAudioFocusPolling()
+                }
+            } else {
+                Log.w(TAG, "⏸️ Attempted to remove $source but it was not in stack")
+            }
+
+            updateStateAndTimer()
+        }
+    }
+    
+    // ... (rest of methods) ...
+
+    fun reset() {
+        Log.i(TAG, "Resetting InterruptionManager")
+        synchronized(lock) {
+            interruptions.clear()
+            cancelInterruptionTimeout() // This removes callbacks and clears vars
+            stopAudioFocusPolling()
+            context.currentInterruptionSource = InterruptionSource.NONE
+            context.reconnectionSource = InterruptionSource.NONE
+            context.isExpectingSafetyDisconnect = false
+        }
+    }
+
+    // ...
+
+    private fun startInterruptionTimeout(timeoutMs: Long) {
+        // If timer already running, check if we need to update it?
+        // Logic: If timer is running, and we switch source, do we reset?
+        // iOS Logic: "Interruption already in progress - preserving deadline"
+        
+        if (interruptionTimerStartedAt != 0L && interruptionDeadlineMs != 0L) {
+            Log.d(TAG, "⏳ Timer already running - preserving deadline")
+            return
+        }
+        
+        cancelInterruptionTimeout() // Safety clear
+        
+        val now = System.currentTimeMillis()
+        interruptionTimerStartedAt = now
+        interruptionDeadlineMs = now + timeoutMs
+        
+        val remainingMs = interruptionDeadlineMs - now
+        
+        interruptionRunnable = Runnable {
+            synchronized(lock) {
+                Log.w(TAG, "❌ Interruption timeout expired (source=${context.currentInterruptionSource})")
+                
+                context.lastError = "Stream stopped due to prolonged interruption"
+                delegate.transitionTo(StreamEvent.TimeoutExpired)  
+                
+                interruptions.clear()
+                cancelInterruptionTimeout()
+                stopAudioFocusPolling()
+                context.currentInterruptionSource = InterruptionSource.NONE
+                context.reconnectionSource = InterruptionSource.NONE
+            }
+        }
+        
+        Log.i(TAG, "⏳ Timer started: calculated remaining=${remainingMs}ms (requested timeout=${timeoutMs}ms)")
+        mainHandler.postDelayed(interruptionRunnable!!, remainingMs.coerceAtLeast(0L))
+    }
+    
+    // Polling Logic
+    private fun startAudioFocusPolling() {
+        if (focusPollingRunnable != null) return
+
+        Log.i(TAG, "🔊 Starting audio focus polling (every ${FOCUS_POLLING_INTERVAL_MS}ms)")
+        focusPollingRunnable = object : Runnable {
+            override fun run() {
+                synchronized(lock) {
+                    // Check if we still have Phone/System interruption
+                    val needsFocus = interruptions.any { it.source == InterruptionSource.PHONE_CALL || it.source == InterruptionSource.SYSTEM_RESOURCE }
+                    if (!needsFocus) {
+                        stopAudioFocusPolling()
+                        return
+                    }
+                    
+                    try {
+                        Log.d(TAG, "🔊 Polling: checking audio focus...")
+                        if (delegate.tryAcquireAudioFocus()) {
+                            Log.i(TAG, "🔊 Polling: Audio focus acquired! Recovering...")
+                            handlePhoneInterruptionEnded() // Handles simple case, assuming Phone/Focus is the reason
+                            // If SystemResource was the reason, we might need handleSystemInterruptionEnded()
+                            // But usually focus logic maps to PhoneInterruption APIs here.
+                            // If both are present, handlePhoneInterruptionEnded only removes PHONE_CALL. 
+                            // SystemResource might need separate handling if it doesn't auto-clear.
+                            // However, Focus Gain usually implies we can resume audio.
+                            
+                            // Also clear SystemResource if focus is regained?
+                            if (interruptions.any { it.source == InterruptionSource.SYSTEM_RESOURCE }) {
+                                handleSystemInterruptionEnded()
+                            }
+                            
+                            stopAudioFocusPolling()
+                        } else {
+                            // Schedule next poll
+                            mainHandler.postDelayed(this, FOCUS_POLLING_INTERVAL_MS)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in focus polling: ${e.message}")
+                        stopAudioFocusPolling()
+                    }
+                }
+            }
+        }
+        mainHandler.postDelayed(focusPollingRunnable!!, FOCUS_POLLING_INTERVAL_MS)
+    }
+
+    private fun stopAudioFocusPolling() {
+        if (focusPollingRunnable != null) {
+            Log.d(TAG, "🔊 Stopping audio focus polling")
+            mainHandler.removeCallbacks(focusPollingRunnable!!)
+            focusPollingRunnable = null
+        }
+    }
     
     // Track actual interruption start time for accurate countdown
     private var interruptionStartedAt: Long = 0L
@@ -80,53 +250,6 @@ class InterruptionManager(
         handleInterruptionEndedInternal(InterruptionSource.SYSTEM_RESOURCE)
     }
 
-    // Common Interruption Handlers (Internal)
-    private fun handleInterruptionBeganInternal(source: InterruptionSource) {
-        if (!::delegate.isInitialized) {
-            Log.w(TAG, "Delegate not initialized; ignoring interruption began: $source")
-            return
-        }
-        
-        // Record start time if this is the first interruption in the stack
-        if (interruptions.isEmpty()) {
-            interruptionStartedAt = System.currentTimeMillis()
-        }
-        
-        synchronized(lock) {
-            val interruption = when (source) {
-                InterruptionSource.PHONE_CALL -> PhoneCallInterruption()
-                InterruptionSource.NETWORK -> NetworkInterruption()
-                InterruptionSource.SYSTEM_RESOURCE -> SystemResourceInterruption()
-                else -> return
-            }
-
-            if (interruptions.none { it.source == source }) {
-                interruptions.add(interruption)
-                Log.i(TAG, "⏸️ Added $interruption - Stack: ${interruptions.map { it.source }}")
-            } else {
-                Log.d(TAG, "⏸️ $source already in stack - ignoring duplicate")
-            }
-
-            updateStateAndTimer()
-        }
-    }
-
-    private fun handleInterruptionEndedInternal(source: InterruptionSource) {
-        if (!::delegate.isInitialized) {
-            Log.w(TAG, "Delegate not initialized; ignoring interruption ended: $source")
-            return
-        }
-        synchronized(lock) {
-            val removed = interruptions.removeIf { it.source == source }
-            if (removed) {
-                Log.i(TAG, "⏸️ Removed $source - Stack: ${interruptions.map { it.source }}")
-            } else {
-                Log.w(TAG, "⏸️ Attempted to remove $source but it was not in stack")
-            }
-
-            updateStateAndTimer()
-        }
-    }
 
     private fun updateStateAndTimer() {
         // 1. Determine Effective Source (Priority Logic)
@@ -213,43 +336,7 @@ class InterruptionManager(
         }
     }
 
-    private fun startInterruptionTimeout(timeoutMs: Long) {
-        // If timer already running, check if we need to update it?
-        // Logic: If timer is running, and we switch source, do we reset?
-        // iOS Logic: "Interruption already in progress - keeping existing deadline" (Time Conservation)
-        
-        if (interruptionTimerStartedAt != 0L && interruptionDeadlineMs != 0L) {
-            Log.d(TAG, "⏳ Timer already running - preserving deadline")
-            return
-        }
-        
-        cancelInterruptionTimeout() // Safety clear
-        
-        val now = System.currentTimeMillis()
-        interruptionTimerStartedAt = now
-        interruptionDeadlineMs = now + timeoutMs
-        
-        val remainingMs = interruptionDeadlineMs - now
-        
-        interruptionRunnable = Runnable {
-            synchronized(lock) {
-                Log.w(TAG, "❌ Interruption timeout expired (source=${context.currentInterruptionSource})")
-                
-                context.lastError = "Stream stopped due to prolonged interruption"
-                delegate.transitionTo(StreamEvent.TimeoutExpired)  // Use TimeoutExpired, not ReconnectionFailed
-                
-                // Cleanup - DON'T call updateStateAndTimer() after FAILED transition
-                // as it would potentially trigger another state change and duplicate events
-                interruptions.clear()
-                cancelInterruptionTimeout()
-                context.currentInterruptionSource = InterruptionSource.NONE
-                context.reconnectionSource = InterruptionSource.NONE
-            }
-        }
-        
-        mainHandler.postDelayed(interruptionRunnable!!, remainingMs.coerceAtLeast(0L))
-        Log.i(TAG, "⏳ Timer started: ${timeoutMs/1000}s (source=${context.currentInterruptionSource})")
-    }
+
 
     private fun cancelInterruptionTimeout() {
         if (interruptionRunnable != null) {
@@ -305,14 +392,5 @@ class InterruptionManager(
         }
     }
 
-    fun reset() {
-        synchronized(lock) {
-            cancelInterruptionTimeout()
-            interruptions.clear()
-            interruptionStartedAt = 0L
-            context.currentInterruptionSource = InterruptionSource.NONE
-            context.reconnectionSource = InterruptionSource.NONE
-            Log.i(TAG, "Reset - Cleared all interruptions")
-        }
-    }
+
 }

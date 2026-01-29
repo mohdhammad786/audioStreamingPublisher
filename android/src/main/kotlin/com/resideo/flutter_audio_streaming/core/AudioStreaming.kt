@@ -342,6 +342,10 @@ class AudioStreaming(
         }
     }
 
+    override fun tryAcquireAudioFocus(): Boolean {
+        return audioFocusManager.requestFocus()
+    }
+
     override fun abandonAudioFocus() {
         audioFocusManager.abandonFocus()
     }
