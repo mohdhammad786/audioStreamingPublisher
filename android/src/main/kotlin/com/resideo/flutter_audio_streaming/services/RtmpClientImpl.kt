@@ -87,6 +87,12 @@ class RtmpClientImpl(
     override fun stopStream() {
         try {
             stream.close()
+            // Detach audio source from mixer to release resources (suspend function)
+            runBlocking {
+                mixer.attachAudio(0, null)
+            }
+            audioSource = null
+            Log.i("RtmpClientImpl", "Stopped: Audio source detached")
         } catch (_: Throwable) {
         }
         connection.close()
