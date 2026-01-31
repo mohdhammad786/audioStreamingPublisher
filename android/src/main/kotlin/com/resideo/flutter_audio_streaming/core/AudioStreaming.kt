@@ -360,10 +360,10 @@ class AudioStreaming(
     override fun reconnectStream() {
         // Add safeguard delay for Hardware Mic release
         // This prevents "silence" issues where the Mic is still busy from the previous session
-        Log.i(TAG, "reconnectStream called - waiting 500ms for hardware cleanup...")
+        Log.i(TAG, "reconnectStream called - waiting 1000ms for hardware cleanup...")
         mainHandler.postDelayed({
             reconnectionService.reconnectStream()
-        }, 500)
+        }, 1000)
     }
 
 

@@ -163,10 +163,15 @@ class AudioFocusPermanentLossTest {
         verify(mockDartMessenger).send(eq(DartMessenger.EventType.AUDIO_INTERRUPTED), anyString(), any())
 
         // 3. Music Stops -> Focus Regained
-        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        val cleanupCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         audioStreaming.onPhoneInterruptionEnded()
         
-        // Capture reconnection delay
+        // 1. Verify and run hardware cleanup delay (500ms)
+        verify(mockHandler, atLeastOnce()).postDelayed(cleanupCaptor.capture(), eq(1000L))
+        cleanupCaptor.value.run()
+        
+        // 2. Capture reconnection delay (1000ms)
+        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
         runnableCaptor.value.run()
         
@@ -268,10 +273,14 @@ class AudioFocusPermanentLossTest {
         verify(mockDartMessenger, never()).send(eq(DartMessenger.EventType.RTMP_STOPPED), anyString())
 
         // 4. User stops music -> Focus regained (within a few seconds)
-        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        val cleanupCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         audioStreaming.onPhoneInterruptionEnded()
         
-        // Capture and execute reconnection delay
+        // 1. Verify and run hardware cleanup delay (500ms)
+        verify(mockHandler, atLeastOnce()).postDelayed(cleanupCaptor.capture(), eq(1000L))
+        cleanupCaptor.value.run()
+        
+        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
         runnableCaptor.allValues.last().run()
         
@@ -328,8 +337,13 @@ class AudioFocusPermanentLossTest {
         audioStreaming.onActivityResumed(mockActivityInstance)
         
         // Capture the 500ms proactive resume delay
-        verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(500L))
+        verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
         runnableCaptor.allValues.last().run()
+        
+        // 1. Verify and run hardware cleanup delay (500ms) - triggered by handlePhoneInterruptionEnded
+        val cleanupCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        verify(mockHandler, atLeastOnce()).postDelayed(cleanupCaptor.capture(), eq(1000L))
+        cleanupCaptor.value.run()
         
         // Should trigger reconnection
         // Capture the 1000ms reconnection delay (from InterruptionManager -> handlePhoneInterruptionEnded -> ReconnectionService)

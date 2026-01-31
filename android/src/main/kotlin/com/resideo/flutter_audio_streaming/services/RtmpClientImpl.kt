@@ -1,7 +1,10 @@
 package com.resideo.flutter_audio_streaming.services
 
 import android.content.Context
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -43,16 +46,17 @@ class RtmpClientImpl(
         noiseSuppressor: Boolean
     ): Boolean {
         try {
-            // Use MIC directly for stability and background compatibility.
-            // VOICE_COMMUNICATION caused issues with background recording and potential crashes.
+            // Determine best audio source based on connected devices
+            val selectedSource = getBestAudioSource()
+            
             val micSource = AudioRecordSource(context).apply {
-                audioSource = MediaRecorder.AudioSource.MIC
+                audioSource = selectedSource
             }
             
             val attachResult = mixer.attachAudio(0, micSource)
             
             if (attachResult.isFailure) {
-                Log.e("RtmpClientImpl", "Failed to attach MIC source: ${attachResult.exceptionOrNull()}")
+                Log.e("RtmpClientImpl", "Failed to attach source (source=$selectedSource): ${attachResult.exceptionOrNull()}")
                 return false
             }
             
@@ -61,11 +65,31 @@ class RtmpClientImpl(
             stream.audioSetting.sampleRate = sampleRate
             stream.audioSetting.channelCount = if (isStereo) 2 else 1
             stream.hasAudio = true
-            Log.i("RtmpClientImpl", "Audio prepared successfully with MIC source")
+            
+            Log.i("RtmpClientImpl", "Audio prepared successfully with source: $selectedSource")
             return true
         } catch (e: Exception) {
             Log.e("RtmpClientImpl", "Failed to prepare audio: ${e.message}", e)
             return false
+        }
+    }
+
+    private fun getBestAudioSource(): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return MediaRecorder.AudioSource.MIC
+        }
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        val hasExternalMic = devices.any { 
+            it.type == AudioDeviceInfo.TYPE_USB_DEVICE || it.type == AudioDeviceInfo.TYPE_USB_HEADSET 
+        }
+
+        return if (hasExternalMic) {
+             Log.i("RtmpClientImpl", "✅ External USB audio device detected. Using AudioSource.DEFAULT to allow OS routing.")
+             MediaRecorder.AudioSource.DEFAULT
+        } else {
+             Log.i("RtmpClientImpl", "ℹ️ No external USB detected. Using AudioSource.MIC.")
+             MediaRecorder.AudioSource.MIC
         }
     }
 

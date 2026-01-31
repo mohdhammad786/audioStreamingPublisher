@@ -146,10 +146,15 @@ class InterruptionReconnectionTest {
 
         // 3. Music Stops -> Audio Focus Gained
         // AudioFocusManager calls mediator.onPhoneInterruptionEnded()
-        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        val cleanupCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         audioStreaming.onPhoneInterruptionEnded()
         
-        // Verify reconnection delay (1000ms)
+        // 1. Verify and run hardware cleanup delay (500ms)
+        verify(mockHandler, atLeastOnce()).postDelayed(cleanupCaptor.capture(), eq(1000L))
+        cleanupCaptor.value.run()
+        
+        // 2. Verify reconnection delay (1000ms)
+        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
         runnableCaptor.value.run()
         
@@ -184,12 +189,17 @@ class InterruptionReconnectionTest {
 
         // 3. Phone Interruption Ends
         // Capture the reconnection delay runnable
-        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        val cleanupCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         
         audioStreaming.onPhoneInterruptionEnded()
         
-        // It should schedule reconnection with 1000ms delay (or similar in ReconnectionService)
+        // 1. Verify and run hardware cleanup delay (500ms)
+        verify(mockHandler, atLeastOnce()).postDelayed(cleanupCaptor.capture(), eq(1000L))
+        cleanupCaptor.value.run()
+        
+        // 2. Verify reconnection delay (1000ms)
         // ReconnectionService uses 1000ms delay.
+        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
         
         // Execute the reconnection runnable
@@ -235,8 +245,14 @@ class InterruptionReconnectionTest {
         assert(audioStreaming.getStreamState() == StreamState.INTERRUPTED)
 
         // 3. End Interruption (triggers ReconnectionService delay)
-        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        val cleanupCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         audioStreaming.onPhoneInterruptionEnded()
+        
+        // 1. Verify and run hardware cleanup delay (500ms)
+        verify(mockHandler, atLeastOnce()).postDelayed(cleanupCaptor.capture(), eq(1000L))
+        cleanupCaptor.value.run()
+
+        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
 
         // DO NOT run the runnable. State remains INTERRUPTED.
@@ -284,6 +300,11 @@ class InterruptionReconnectionTest {
         
         // Run stabilization delay -> calls handleInterruptionEndedInternal -> triggers ReconnectionService
         stabilizationCaptor.allValues.last().run()
+
+        // 1. Verify and run hardware cleanup delay (500ms)
+        val cleanupCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        verify(mockHandler, atLeastOnce()).postDelayed(cleanupCaptor.capture(), eq(1000L))
+        cleanupCaptor.value.run()
 
         // Now ReconnectionService schedules its own delay (another 1000ms)
         // We need to capture that one too.
@@ -356,9 +377,14 @@ class InterruptionReconnectionTest {
         assert(audioStreaming.getStreamState() == StreamState.INTERRUPTED)
 
         // 3. Phone Interruption Ends
-        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        val cleanupCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         audioStreaming.onPhoneInterruptionEnded()
         
+        // 1. Verify and run hardware cleanup delay (500ms)
+        verify(mockHandler, atLeastOnce()).postDelayed(cleanupCaptor.capture(), eq(1000L))
+        cleanupCaptor.value.run()
+        
+        val runnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         verify(mockHandler, atLeastOnce()).postDelayed(runnableCaptor.capture(), eq(1000L))
         runnableCaptor.value.run()
         
@@ -395,6 +421,11 @@ class InterruptionReconnectionTest {
         
         verify(mockHandler, atLeastOnce()).postDelayed(stabilizationCaptor.capture(), eq(1000L))
         stabilizationCaptor.allValues.last().run() // Stabilization delay
+
+        // 1. Verify and run hardware cleanup delay (500ms)
+        val cleanupCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        verify(mockHandler, atLeastOnce()).postDelayed(cleanupCaptor.capture(), eq(1000L))
+        cleanupCaptor.value.run()
 
         val reconnectionCaptor = ArgumentCaptor.forClass(Runnable::class.java)
         verify(mockHandler, atLeastOnce()).postDelayed(reconnectionCaptor.capture(), eq(1000L))
