@@ -13,60 +13,70 @@ import com.haishinkit.media.source.AudioRecordSource
 import com.haishinkit.rtmp.RtmpConnection
 import com.haishinkit.rtmp.RtmpStream
 import com.haishinkit.rtmp.event.Event
+import com.haishinkit.rtmp.event.EventUtils
 import com.haishinkit.rtmp.event.IEventListener
 import com.resideo.flutter_audio_streaming.interfaces.StreamingClient
 import kotlinx.coroutines.runBlocking
 
 /**
- * HaishinKit 0.17.0 connection lifecycle notes:
+ * Modeled EXACTLY after HaishinKit's own RtmpStreamSession.kt from version 0.17.0.
+ * See: https://github.com/HaishinKit/HaishinKit.kt/blob/0.17.0/rtmp/src/main/java/com/haishinkit/rtmp/RtmpStreamSession.kt
  *
- * PROBLEM: In 0.17.0, RtmpStream.EventListener calls connection.createStream(stream)
- * inside the Connect.Success event handler. connection.createStream() calls connection.call()
- * which checks `if (!isConnected) return`. If socket.isConnected is still false at the
- * moment the event is dispatched to listeners (a timing issue), createStream is silently
- * dropped → server receives nothing → closes connection after ~10 seconds.
- *
- * FIX: Create the RtmpStream INSIDE our Connect.Success handler, where we KNOW the
- * connection is established. RtmpStream.init{} contains:
- *   `if (connection.isConnected) { connection.createStream(this) }`
- * which fires createStream directly and reliably at that moment.
- *
- * This means:
- * - startStream() only creates RtmpConnection and calls connect()
- * - RtmpStream is created in onConnected() (our Connect.Success callback)
- * - publish() is called after the stream is wired up
+ * Key patterns from the official implementation:
+ * 1. Register OUR listener on connection FIRST, then create RtmpStream
+ * 2. Call publish() INSIDE the Connect.Success handler (not before connect)
+ * 3. Listen on BOTH connection AND stream for RTMP_STATUS events
  */
 class RtmpClientImpl(
     private val context: Context,
     private val handler: RtmpConnectionHandler
 ) : StreamingClient, IEventListener {
 
-    // MediaMixer: long-lived, started once. Never call stopRunning() — see class doc.
     private val mixer = MediaMixer(context)
 
-    // Connection is recreated per session (0.17.0: close() permanently removes streams).
-    // Stream is created AFTER Connect.Success (see class doc).
     private var connection: RtmpConnection = RtmpConnection()
     private var stream: RtmpStream = RtmpStream(context, connection)
 
-    // Stored between startStream() and Connect.Success so publish() can be called
-    // once the stream is created inside onConnected().
-    private var pendingStreamName: String? = null
-
-    // Audio settings stored to re-apply to each fresh stream.
-    private var lastBitrate: Int = 64 * 1024
+    // Audio settings saved across sessions
+    private var lastBitrate: Int = 128 * 1024
     private var lastSampleRate: Int = 44100
     private var lastChannelCount: Int = 1
 
     private var streamingActive: Boolean = false
     private var audioSource: AudioRecordSource? = null
     private var lastUrl: String? = null
+    private var pendingStreamName: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
+        // Match official pattern: register on both connection and stream
+        connection.addEventListener(Event.RTMP_STATUS, this)
+        stream.addEventListener(Event.RTMP_STATUS, this)
         mixer.registerOutput(stream)
         mixer.startRunning()
+    }
+
+    /**
+     * Creates fresh connection + stream pair.
+     * Matches the RtmpStreamSession.init{} pattern exactly:
+     * 1. Create connection, add OUR listener
+     * 2. Create stream, add OUR listener
+     */
+    private fun createFreshSession() {
+        Log.d(TAG, "createFreshSession")
+        try { connection.removeEventListener(Event.RTMP_STATUS, this) } catch (_: Throwable) {}
+        try { stream.removeEventListener(Event.RTMP_STATUS, this) } catch (_: Throwable) {}
+        try { mixer.unregisterOutput(stream) } catch (_: Throwable) {}
+
+        // Exactly like RtmpStreamSession.init{}:
+        connection = RtmpConnection()
         connection.addEventListener(Event.RTMP_STATUS, this)
+        stream = RtmpStream(context, connection)
+        stream.addEventListener(Event.RTMP_STATUS, this)
+
+        applyAudioSettingsToStream()
+        mixer.registerOutput(stream)
+        Log.d(TAG, "createFreshSession: done")
     }
 
     // -------------------------------------------------------------------------
@@ -88,7 +98,7 @@ class RtmpClientImpl(
             val micSource = AudioRecordSource(context).apply { audioSource = selectedSource }
             val attachResult = mixer.attachAudio(0, micSource)
             if (attachResult.isFailure) {
-                Log.e(TAG, "Failed to attach audio source: ${attachResult.exceptionOrNull()}")
+                Log.e(TAG, "Failed to attach audio: ${attachResult.exceptionOrNull()}")
                 return false
             }
             audioSource = micSource
@@ -112,45 +122,17 @@ class RtmpClientImpl(
         val baseUrl = url.substring(0, lastSlash)
         val streamName = url.substring(lastSlash + 1)
 
-        // Prepare a fresh connection. Do NOT create RtmpStream yet —
-        // it will be created inside onConnected() once isConnected=true.
-        try { connection.removeEventListener(Event.RTMP_STATUS, this) } catch (_: Throwable) {}
-        connection = RtmpConnection()
-        connection.addEventListener(Event.RTMP_STATUS, this)
+        createFreshSession()
 
-        pendingStreamName = streamName
         lastUrl = url
-        connection.connect(baseUrl)
+        pendingStreamName = streamName
         streamingActive = true
 
-        Log.i(TAG, "startStream: connecting to $baseUrl / stream=$streamName")
-    }
-
-    /**
-     * Called when Connect.Success fires. At this point connection.isConnected = true.
-     * We create the RtmpStream HERE so its init{} can call createStream directly
-     * via the `if (connection.isConnected)` branch — bypassing the event-listener
-     * timing race that caused createStream to be silently dropped.
-     */
-    private fun onConnected() {
-        Log.d(TAG, "onConnected: creating RtmpStream with live connection")
-        try { mixer.unregisterOutput(stream) } catch (_: Throwable) {}
-
-        // Creating stream when connection.isConnected = true →
-        // RtmpStream.init{} calls connection.createStream(this) directly
-        stream = RtmpStream(context, connection)
-        applyAudioSettingsToStream()
-        mixer.registerOutput(stream)
-
-        // Queue the publish — will be sent when createStream response sets readyState=OPEN
-        val streamName = pendingStreamName
-        if (streamName != null) {
-            stream.publish(streamName)
-            pendingStreamName = null
-        } else {
-            Log.e(TAG, "onConnected: pendingStreamName is null — publish skipped")
-        }
-        Log.d(TAG, "onConnected: stream wired and publish queued")
+        // CRITICAL: Do NOT call stream.publish() here!
+        // In 0.17.0, publish must be called INSIDE the Connect.Success handler.
+        // This matches the official RtmpStreamSession pattern exactly.
+        connection.connect(baseUrl)
+        Log.i(TAG, "startStream: connecting to $baseUrl (publish will be called on Connect.Success)")
     }
 
     override fun stopStream() {
@@ -182,30 +164,40 @@ class RtmpClientImpl(
     }
 
     // -------------------------------------------------------------------------
-    // IEventListener
+    // IEventListener — matches RtmpStreamSession.handleEvent() exactly
     // -------------------------------------------------------------------------
 
     override fun handleEvent(event: Event) {
-        val data = event.data
-        if (data is Map<*, *>) {
-            val code = data["code"] as? String ?: return
-            Log.w(TAG, "⚡ RTMP EVENT: $code | desc=${data["description"]}")
-            when (code) {
-                "NetConnection.Connect.Success" -> {
-                    // Create stream NOW (isConnected = true) then notify
-                    onConnected()
-                    handler.notifyConnected()
-                }
-                "NetConnection.Connect.Closed",
-                "NetConnection.Connect.Failed",
-                "NetConnection.Connect.Rejected" -> {
-                    streamingActive = false
-                    handler.notifyDisconnected(code, data["description"] as? String)
-                }
-                "NetStream.Publish.BadName",
-                "NetStream.Publish.Rejected" -> handler.notifyAuthError(code)
-                "NetStream.Publish.Start" -> startAudioCodecForEncoding()
+        val data = EventUtils.toMap(event)
+        val code = data["code"]?.toString() ?: return
+
+        Log.w(TAG, "⚡ RTMP EVENT: $code | data=$data")
+
+        when (code) {
+            // Official pattern: call publish() inside Connect.Success
+            RtmpConnection.Code.CONNECT_SUCCESS.rawValue -> {
+                Log.i(TAG, "🔗 Connected — calling publish('$pendingStreamName')")
+                pendingStreamName?.let { stream.publish(it) }
+                handler.notifyConnected()
             }
+
+            // Publish acknowledged — stream is live
+            RtmpStream.Code.PUBLISH_START.rawValue -> {
+                Log.i(TAG, "🎙️ Publish.Start — stream is live, starting audio codec")
+                startAudioCodecForEncoding()
+            }
+
+            // Connection closed/failed
+            RtmpConnection.Code.CONNECT_CLOSED.rawValue,
+            RtmpConnection.Code.CONNECT_FAILED.rawValue,
+            RtmpConnection.Code.CONNECT_REJECTED.rawValue -> {
+                streamingActive = false
+                handler.notifyDisconnected(code, data["description"]?.toString())
+            }
+
+            // Auth errors
+            "NetStream.Publish.BadName",
+            "NetStream.Publish.Rejected" -> handler.notifyAuthError(code)
         }
     }
 
@@ -213,13 +205,7 @@ class RtmpClientImpl(
     // Private helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * HaishinKit 0.17.0: RtmpStream.startRunning() sets Stream.isRunning=true but
-     * never calls audioCodec.startRunning() in encode mode. AudioCodec.append()
-     * silently drops all audio when isRunning=false. We start the codec via reflection.
-     */
     private fun startAudioCodecForEncoding() {
-        Log.i(TAG, "NetStream.Publish.Start — starting audio codec for encoding")
         try {
             var cls: Class<*>? = stream.javaClass
             while (cls != null) {
@@ -228,12 +214,11 @@ class RtmpClientImpl(
                     f.isAccessible = true
                     val codec = f.get(stream)
                     codec?.javaClass?.getMethod("startRunning")?.invoke(codec)
-                    Log.i(TAG, "✅ audioCodec.startRunning() called via ${cls.simpleName}")
-                    break
-                } catch (_: NoSuchFieldException) {
-                    cls = cls.superclass
-                }
+                    Log.i(TAG, "✅ audioCodec.startRunning() via ${cls.simpleName}")
+                    return
+                } catch (_: NoSuchFieldException) { cls = cls.superclass }
             }
+            Log.e(TAG, "❌ audioCodec field not found in class hierarchy")
         } catch (e: Exception) {
             Log.e(TAG, "❌ audioCodec.startRunning() failed: ${e.message}")
         }
