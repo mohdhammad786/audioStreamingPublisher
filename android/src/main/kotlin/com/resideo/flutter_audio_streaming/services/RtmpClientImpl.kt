@@ -21,27 +21,20 @@ import kotlinx.coroutines.runBlocking
 /**
  * Modeled after HaishinKit's own RtmpStreamSession.kt (0.17.0).
  *
- * CRITICAL CHAIN for audio to flow:
- *   mixer.attachAudio(source) → mixer.hasAudio = true
- *   mixer.registerOutput(stream) → stream.dataSource = mixer
- *   stream.hasAudio getter returns mixer.hasAudio (via dataSource)
- *   When readyState=PUBLISHING → Stream.startRunning() checks hasAudio
- *   If hasAudio=true → audioCodec.startRunning() → audio flows
- *   If hasAudio=false → audioCodec NEVER starts → server times out
- *
- * Therefore: mixer must have audio attached BEFORE publish succeeds.
- * stopStream() must NOT detach audio from mixer — only close stream/connection.
- * Audio source is re-attached in prepareAudio() which is called before each session.
+ * ALL components (MediaMixer, RtmpConnection, RtmpStream) are created fresh
+ * for each streaming session. This eliminates ALL shared state bugs:
+ * - MediaMixer's keepAlive flag (cannot restart after stopRunning)
+ * - RtmpConnection's streams map (permanently emptied after close)
+ * - Audio capture coroutine lifecycle
  */
 class RtmpClientImpl(
     private val context: Context,
     private val handler: RtmpConnectionHandler
 ) : StreamingClient, IEventListener {
 
-    private val mixer = MediaMixer(context)
-
-    private var connection: RtmpConnection = RtmpConnection()
-    private var stream: RtmpStream = RtmpStream(context, connection)
+    private var mixer: MediaMixer? = null
+    private var connection: RtmpConnection? = null
+    private var stream: RtmpStream? = null
 
     // Audio settings saved across sessions
     private var lastBitrate: Int = 128 * 1024
@@ -49,44 +42,9 @@ class RtmpClientImpl(
     private var lastChannelCount: Int = 1
 
     private var streamingActive: Boolean = false
-    private var audioSource: AudioRecordSource? = null
     private var lastUrl: String? = null
     private var pendingStreamName: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
-
-    init {
-        connection.addEventListener(Event.RTMP_STATUS, this)
-        stream.addEventListener(Event.RTMP_STATUS, this)
-        mixer.registerOutput(stream)
-        mixer.startRunning()
-    }
-
-    /**
-     * Creates fresh connection + stream pair.
-     * Matches the RtmpStreamSession.init{} ordering:
-     * 1. Create connection, add OUR listener
-     * 2. Create stream, add OUR listener
-     * 3. Wire mixer
-     */
-    private fun createFreshSession() {
-        Log.d(TAG, "createFreshSession")
-        try { connection.removeEventListener(Event.RTMP_STATUS, this) } catch (_: Throwable) {}
-        try { stream.removeEventListener(Event.RTMP_STATUS, this) } catch (_: Throwable) {}
-        try { mixer.unregisterOutput(stream) } catch (_: Throwable) {}
-
-        connection = RtmpConnection()
-        connection.addEventListener(Event.RTMP_STATUS, this)
-        stream = RtmpStream(context, connection)
-        stream.addEventListener(Event.RTMP_STATUS, this)
-
-        applyAudioSettingsToStream()
-        mixer.registerOutput(stream)
-        Log.d(TAG, "createFreshSession: done")
-    }
-
-    // -------------------------------------------------------------------------
-    // StreamingClient interface
-    // -------------------------------------------------------------------------
 
     override val isStreaming: Boolean
         get() = streamingActive
@@ -99,18 +57,10 @@ class RtmpClientImpl(
         noiseSuppressor: Boolean
     ): Boolean {
         return try {
-            val selectedSource = getBestAudioSource()
-            val micSource = AudioRecordSource(context).apply { audioSource = selectedSource }
-            val attachResult = mixer.attachAudio(0, micSource)
-            if (attachResult.isFailure) {
-                Log.e(TAG, "Failed to attach audio: ${attachResult.exceptionOrNull()}")
-                return false
-            }
-            audioSource = micSource
             lastBitrate = bitrate
             lastSampleRate = sampleRate
             lastChannelCount = if (isStereo) 2 else 1
-            Log.i(TAG, "Audio prepared: source=$selectedSource bitrate=$bitrate sampleRate=$sampleRate stereo=$isStereo")
+            Log.i(TAG, "Audio settings saved: bitrate=$bitrate sampleRate=$sampleRate stereo=$isStereo")
             true
         } catch (e: Exception) {
             Log.e(TAG, "prepareAudio failed: ${e.message}", e)
@@ -127,33 +77,79 @@ class RtmpClientImpl(
         val baseUrl = url.substring(0, lastSlash)
         val streamName = url.substring(lastSlash + 1)
 
-        createFreshSession()
+        // Create EVERYTHING fresh — no shared state from previous sessions
+        teardown()
 
+        val newMixer = MediaMixer(context)
+        val newConnection = RtmpConnection()
+        newConnection.addEventListener(Event.RTMP_STATUS, this)
+        val newStream = RtmpStream(context, newConnection)
+        newStream.addEventListener(Event.RTMP_STATUS, this)
+
+        // Apply audio settings
+        newStream.audioSetting.bitRate = lastBitrate
+        newStream.audioSetting.sampleRate = lastSampleRate
+        newStream.audioSetting.channelCount = lastChannelCount
+        newStream.hasAudio = true
+
+        // Attach audio source to mixer
+        val selectedSource = getBestAudioSource()
+        val micSource = AudioRecordSource(context).apply {
+            audioSource = selectedSource
+        }
+        runBlocking {
+            val result = newMixer.attachAudio(0, micSource)
+            if (result.isFailure) {
+                Log.e(TAG, "Failed to attach audio: ${result.exceptionOrNull()}")
+            }
+        }
+
+        // Wire mixer → stream and start audio capture
+        newMixer.registerOutput(newStream)
+        newMixer.startRunning()
+
+        // Store references
+        mixer = newMixer
+        connection = newConnection
+        stream = newStream
         lastUrl = url
         pendingStreamName = streamName
         streamingActive = true
 
-        // Publish is called inside Connect.Success handler (official 0.17.0 pattern)
-        connection.connect(baseUrl)
+        // Connect — publish will be called in Connect.Success handler
+        newConnection.connect(baseUrl)
         Log.i(TAG, "startStream: connecting to $baseUrl (publish on Connect.Success)")
     }
 
     override fun stopStream() {
         pendingStreamName = null
-        try {
-            stream.close()
-            // DO NOT detach audio from mixer here!
-            // mixer.hasAudio must remain true so that Stream.startRunning()
-            // calls audioCodec.startRunning() on the next session.
-            // Audio will be re-attached in the next prepareAudio() call.
-            Log.i(TAG, "stopStream: stream closed")
-        } catch (_: Throwable) {}
-        try { connection.close() } catch (_: Throwable) {}
+        teardown()
         streamingActive = false
     }
 
-    override fun disableAudio() { stream.hasAudio = false }
-    override fun enableAudio() { stream.hasAudio = true }
+    /**
+     * Tears down all components cleanly. After this, mixer/connection/stream are null.
+     */
+    private fun teardown() {
+        try { stream?.close() } catch (_: Throwable) {}
+        try {
+            connection?.removeEventListener(Event.RTMP_STATUS, this)
+        } catch (_: Throwable) {}
+        try { stream?.removeEventListener(Event.RTMP_STATUS, this) } catch (_: Throwable) {}
+        try { connection?.close() } catch (_: Throwable) {}
+        try {
+            stream?.let { mixer?.unregisterOutput(it) }
+        } catch (_: Throwable) {}
+        try { mixer?.stopRunning() } catch (_: Throwable) {}
+        try { mixer?.dispose() } catch (_: Throwable) {}
+        mixer = null
+        connection = null
+        stream = null
+        Log.d(TAG, "teardown: all components destroyed")
+    }
+
+    override fun disableAudio() { stream?.hasAudio = false }
+    override fun enableAudio() { stream?.hasAudio = true }
 
     override fun reTry(delay: Long, reason: String): Boolean {
         val url = lastUrl ?: run {
@@ -181,14 +177,12 @@ class RtmpClientImpl(
         when (code) {
             RtmpConnection.Code.CONNECT_SUCCESS.rawValue -> {
                 Log.i(TAG, "🔗 Connected — calling publish('$pendingStreamName')")
-                pendingStreamName?.let { stream.publish(it) }
+                pendingStreamName?.let { stream?.publish(it) }
                 handler.notifyConnected()
             }
 
             RtmpStream.Code.PUBLISH_START.rawValue -> {
-                Log.i(TAG, "🎙️ Publish.Start — stream is live")
-                // Dump full audio pipeline state after 2 seconds
-                mainHandler.postDelayed({ dumpAudioChainState() }, 2000)
+                Log.i(TAG, "🎙️ Publish.Start — stream is live, audio should be flowing")
             }
 
             RtmpConnection.Code.CONNECT_CLOSED.rawValue,
@@ -206,83 +200,6 @@ class RtmpClientImpl(
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
-
-    /**
-     * 🔍 DIAGNOSTIC: Dumps the full audio pipeline state via reflection.
-     * Remove this after the bug is fixed.
-     */
-    private fun dumpAudioChainState() {
-        try {
-            Log.e(TAG, "═══ AUDIO CHAIN DIAGNOSTIC ═══")
-            Log.e(TAG, "stream.hasAudio = ${stream.hasAudio}")
-            Log.e(TAG, "stream class = ${stream.javaClass.name}")
-
-            // Check Stream.isRunning
-            var cls: Class<*>? = stream.javaClass
-            while (cls != null) {
-                try {
-                    val isRunningField = cls.getDeclaredField("isRunning")
-                    isRunningField.isAccessible = true
-                    val isRunningVal = isRunningField.get(stream)
-                    Log.e(TAG, "stream.isRunning (${cls.simpleName}) = $isRunningVal")
-                    break
-                } catch (_: NoSuchFieldException) { cls = cls.superclass }
-            }
-
-            // Dump ALL field names in the class hierarchy
-            cls = stream.javaClass
-            while (cls != null && cls != Any::class.java) {
-                val fieldNames = cls.declaredFields.map { it.name }
-                Log.e(TAG, "Fields in ${cls.simpleName}: $fieldNames")
-                cls = cls.superclass
-            }
-
-            // Try to find audioCodec via various possible field names
-            cls = stream.javaClass
-            while (cls != null && cls != Any::class.java) {
-                for (field in cls.declaredFields) {
-                    if (field.name.contains("audio", ignoreCase = true) ||
-                        field.name.contains("codec", ignoreCase = true)) {
-                        field.isAccessible = true
-                        val value = field.get(stream)
-                        Log.e(TAG, "  ${cls.simpleName}.${field.name} = $value (type=${field.type.simpleName})")
-                        // If it's a Lazy, try to get its value
-                        if (value is Lazy<*>) {
-                            val lazyVal = value.value
-                            Log.e(TAG, "    └─ Lazy.value = $lazyVal")
-                            // Check if it has isRunning
-                            try {
-                                val irField = lazyVal?.javaClass?.getDeclaredField("isRunning")
-                                    ?: lazyVal?.javaClass?.superclass?.getDeclaredField("isRunning")
-                                irField?.isAccessible = true
-                                Log.e(TAG, "    └─ isRunning = ${irField?.get(lazyVal)}")
-                            } catch (_: Exception) {}
-                        }
-                    }
-                }
-                cls = cls.superclass
-            }
-
-            // Check mixer state
-            Log.e(TAG, "mixer.hasAudio = (checking via dataSource)")
-            val dsField = stream.javaClass.superclass?.getDeclaredField("dataSource")
-                ?: stream.javaClass.getDeclaredField("dataSource")
-            dsField.isAccessible = true
-            val ds = dsField.get(stream)
-            Log.e(TAG, "stream.dataSource = $ds (null=${ds == null})")
-
-            Log.e(TAG, "═══ END DIAGNOSTIC ═══")
-        } catch (e: Exception) {
-            Log.e(TAG, "Diagnostic failed: ${e.message}", e)
-        }
-    }
-
-    private fun applyAudioSettingsToStream() {
-        stream.audioSetting.bitRate = lastBitrate
-        stream.audioSetting.sampleRate = lastSampleRate
-        stream.audioSetting.channelCount = lastChannelCount
-        stream.hasAudio = true
-    }
 
     private fun getBestAudioSource(): Int {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return MediaRecorder.AudioSource.MIC
