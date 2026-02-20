@@ -18,14 +18,8 @@ import com.resideo.flutter_audio_streaming.interfaces.StreamingClient
 import kotlinx.coroutines.runBlocking
 
 /**
- * MINIMAL delta from the working 0.16.0 code.
- *
- * The ONLY change from 0.16.0 → 0.17.0 is:
- *   mixer.startRunning() added to init{}
- *
- * In 0.16.0, MediaMixer.init{} called doAudio() automatically.
- * In 0.17.0, the audio capture loop requires an explicit startRunning() call.
- * Everything else is IDENTICAL to the working 0.16.0 version.
+ * DIAGNOSTIC BUILD — traces every step of the audio pipeline to find why
+ * audio data doesn't reach the RTMP server with HaishinKit 0.17.0.
  */
 class RtmpClientImpl(
     private val context: Context,
@@ -39,10 +33,21 @@ class RtmpClientImpl(
     private var audioSource: AudioRecordSource? = null
     private var lastUrl: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    
+    // Diagnostic
+    private var diagLogCounter = 0
+    private val diagHandler = Handler(Looper.getMainLooper())
+    private var diagRunnable: Runnable? = null
 
     init {
+        Log.i(TAG, "🔨 INIT: mixer.hasAudio=${mixer.hasAudio}, mixer.isRunning=${mixer.isRunning}")
+        
         mixer.registerOutput(stream)
-        mixer.startRunning()  // ← THE ONLY ADDITION for 0.17.0
+        Log.i(TAG, "🔨 INIT: After registerOutput — stream.hasAudio=${stream.hasAudio}")
+        
+        mixer.startRunning()
+        Log.i(TAG, "🔨 INIT: After startRunning — mixer.isRunning=${mixer.isRunning}")
+        
         connection.addEventListener(Event.RTMP_STATUS, this)
     }
 
@@ -57,29 +62,33 @@ class RtmpClientImpl(
         noiseSuppressor: Boolean
     ): Boolean {
         try {
-            val selectedSource = getBestAudioSource()
+            Log.i(TAG, "🔧 prepareAudio: BEFORE — mixer.hasAudio=${mixer.hasAudio}")
 
+            val selectedSource = getBestAudioSource()
             val micSource = AudioRecordSource(context).apply {
                 audioSource = selectedSource
             }
 
             val attachResult = mixer.attachAudio(0, micSource)
-
             if (attachResult.isFailure) {
-                Log.e(TAG, "Failed to attach source (source=$selectedSource): ${attachResult.exceptionOrNull()}")
+                Log.e(TAG, "❌ attachAudio FAILED: ${attachResult.exceptionOrNull()}")
                 return false
             }
 
             audioSource = micSource
+            
+            Log.i(TAG, "✅ prepareAudio: AFTER — mixer.hasAudio=${mixer.hasAudio}")
+            Log.i(TAG, "🔧 AudioRecord state=${micSource.audioRecord?.state}, recording=${micSource.audioRecord?.recordingState}")
+
             stream.audioSetting.bitRate = bitrate
             stream.audioSetting.sampleRate = sampleRate
             stream.audioSetting.channelCount = if (isStereo) 2 else 1
             stream.hasAudio = true
 
-            Log.i(TAG, "Audio prepared: source=$selectedSource bitrate=$bitrate sampleRate=$sampleRate stereo=$isStereo")
+            Log.i(TAG, "🔧 prepareAudio: stream.hasAudio=${stream.hasAudio}, bitrate=$bitrate, sampleRate=$sampleRate")
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "prepareAudio failed: ${e.message}", e)
+            Log.e(TAG, "❌ prepareAudio EXCEPTION: ${e.message}", e)
             return false
         }
     }
@@ -94,21 +103,29 @@ class RtmpClientImpl(
         val streamName = url.substring(lastSlash + 1)
 
         lastUrl = url
+        
+        Log.i(TAG, "🚀 startStream: connecting to $baseUrl")
+        Log.i(TAG, "🚀 BEFORE connect — conn=${connection.isConnected}, stream.hasAudio=${stream.hasAudio}, mixer.running=${mixer.isRunning}, mixer.hasAudio=${mixer.hasAudio}")
+        Log.i(TAG, "🚀 audioRecord state=${audioSource?.audioRecord?.state}, recording=${audioSource?.audioRecord?.recordingState}")
+        
         connection.connect(baseUrl)
         stream.publish(streamName)
         streamingActive = true
-        Log.i(TAG, "startStream: $baseUrl / $streamName")
+        
+        Log.i(TAG, "🚀 startStream: publish('$streamName') queued")
+        startDiagnosticLogger()
     }
 
     override fun stopStream() {
+        stopDiagnosticLogger()
         try {
             stream.close()
             runBlocking { mixer.attachAudio(0, null) }
             audioSource = null
-            Log.i(TAG, "stopStream: audio source detached")
         } catch (_: Throwable) {}
         connection.close()
         streamingActive = false
+        Log.d(TAG, "stopStream: done")
     }
 
     override fun disableAudio() { stream.hasAudio = false }
@@ -131,17 +148,25 @@ class RtmpClientImpl(
         val data = event.data
         if (data is Map<*, *>) {
             val code = data["code"] as? String ?: return
-            Log.w(TAG, "⚡ RTMP EVENT: $code")
+            Log.w(TAG, "⚡ RTMP EVENT: $code | data=$data")
             when (code) {
-                "NetConnection.Connect.Success" -> handler.notifyConnected()
+                "NetConnection.Connect.Success" -> {
+                    Log.i(TAG, "🔗 Connect.Success — stream.hasAudio=${stream.hasAudio}, mixer.running=${mixer.isRunning}, mixer.hasAudio=${mixer.hasAudio}")
+                    handler.notifyConnected()
+                }
+                "NetStream.Publish.Start" -> {
+                    Log.i(TAG, "🎙️ Publish.Start! stream.hasAudio=${stream.hasAudio}, audioRecord.recording=${audioSource?.audioRecord?.recordingState}")
+                }
                 "NetConnection.Connect.Closed",
                 "NetConnection.Connect.Failed",
                 "NetConnection.Connect.Rejected" -> {
+                    Log.e(TAG, "🔴 Disconnect: $code")
                     streamingActive = false
                     handler.notifyDisconnected(code, data["description"] as? String)
                 }
                 "NetStream.Publish.BadName",
                 "NetStream.Publish.Rejected" -> handler.notifyAuthError(code)
+                else -> Log.d(TAG, "📌 Event: $code")
             }
         }
     }
@@ -159,6 +184,38 @@ class RtmpClientImpl(
             Log.i(TAG, "ℹ️ No external USB — using AudioSource.MIC")
             MediaRecorder.AudioSource.MIC
         }
+    }
+    
+    // ========= DIAGNOSTIC PERIODIC LOGGER =========
+    private fun startDiagnosticLogger() {
+        diagLogCounter = 0
+        diagRunnable = object : Runnable {
+            override fun run() {
+                diagLogCounter++
+                if (diagLogCounter > 10) return
+                try {
+                    val ar = audioSource?.audioRecord
+                    Log.i(TAG, "📊 DIAG[$diagLogCounter/10]: " +
+                        "active=$streamingActive " +
+                        "conn=${connection.isConnected} " +
+                        "hasAudio=${stream.hasAudio} " +
+                        "mixerRun=${mixer.isRunning} " +
+                        "mixerAudio=${mixer.hasAudio} " +
+                        "arState=${ar?.state} " +
+                        "arRec=${ar?.recordingState}" +
+                        "")
+                } catch (e: Exception) {
+                    Log.e(TAG, "📊 DIAG[$diagLogCounter]: ${e.message}")
+                }
+                diagHandler.postDelayed(this, 2000)
+            }
+        }
+        diagHandler.postDelayed(diagRunnable!!, 1000)
+    }
+    
+    private fun stopDiagnosticLogger() {
+        diagRunnable?.let { diagHandler.removeCallbacks(it) }
+        diagRunnable = null
     }
 
     companion object {
