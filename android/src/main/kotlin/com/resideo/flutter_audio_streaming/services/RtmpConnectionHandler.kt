@@ -39,6 +39,10 @@ class RtmpConnectionHandler(
     }
 
     fun notifyDisconnected(code: String? = null, description: String? = null) {
+        // 🔍 DIAGNOSTIC: This log tells us if RTMP closed the connection (Path B)
+        // If you see this → the issue is RTMP, NOT NetworkMonitor
+        Log.e(TAG, "🔴 DIAG-PATH-B: notifyDisconnected() called — code=$code desc=$description")
+        Log.e(TAG, "🔴 DIAG-PATH-B: Stack=${Thread.currentThread().stackTrace.take(6).joinToString(" <- ") { it.methodName }}")
         Log.i(TAG, "RTMP Connection Disconnected/Failed - Code: $code, Desc: $description")
 
         mediator.runOnMainThread {

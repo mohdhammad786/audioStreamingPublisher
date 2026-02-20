@@ -89,6 +89,9 @@ class AudioStreaming(
     }
 
     override fun onNetworkLost() {
+        // 🔍 DIAGNOSTIC: This fires if NetworkMonitor triggered the issue (Path A)
+        // If you see this → the issue is NetworkMonitor, NOT RTMP disconnect
+        Log.e(TAG, "🟡 DIAG-PATH-A: onNetworkLost() from NetworkMonitor")
         Log.i(TAG, "Mediator: Network Lost")
         interruptionManager.handleNetworkLost()
     }
