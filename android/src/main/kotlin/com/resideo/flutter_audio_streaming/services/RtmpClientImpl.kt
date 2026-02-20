@@ -207,6 +207,11 @@ class RtmpClientImpl(
                 }
                 "NetStream.Publish.BadName",
                 "NetStream.Publish.Rejected" -> handler.notifyAuthError(code)
+                // HaishinKit 0.17.0 fix: when publish is acknowledged by the server,
+                // readyState=PUBLISHING has fired (startRunning() sets isRunning=true on Stream)
+                // but audioCodec.startRunning() is NOT called in the encode path.
+                // We must start it here so AudioCodec.append() stops dropping audio.
+                "NetStream.Publish.Start" -> startAudioCodecForEncoding()
             }
         }
     }
@@ -214,6 +219,50 @@ class RtmpClientImpl(
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * HaishinKit 0.17.0: starts the audio encoder via reflection.
+     *
+     * In 0.17.0, RtmpStream.startRunning() (called when readyState=PUBLISHING) sets
+     * Stream.isRunning=true but never calls audioCodec.startRunning(). The configure()
+     * method that starts the codec is only called in the decode path. For the encode
+     * (publish) path we must start it explicitly. Since audioCodec is a private field,
+     * we use reflection to access it and call startRunning().
+     */
+    private fun startAudioCodecForEncoding() {
+        try {
+            // audioCodec is declared in Stream (parent of RtmpStream) as:
+            //   protected val audioCodec by lazy { AudioCodec() }
+            val audioCodecField = stream.javaClass.superclass  // RtmpStream → Stream
+                ?.getDeclaredField("audioCodec")
+                ?: stream.javaClass.getDeclaredField("audioCodec")
+            audioCodecField.isAccessible = true
+            val audioCodec = audioCodecField.get(stream)
+            val startRunning = audioCodec?.javaClass?.getMethod("startRunning")
+            startRunning?.invoke(audioCodec)
+            Log.i(TAG, "✅ audioCodec.startRunning() called — encode path ready")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to start audioCodec via reflection: ${e.message}")
+            // Fallback: try via superclass chain
+            try {
+                var cls: Class<*>? = stream.javaClass
+                while (cls != null) {
+                    try {
+                        val f = cls.getDeclaredField("audioCodec")
+                        f.isAccessible = true
+                        val codec = f.get(stream)
+                        codec?.javaClass?.getMethod("startRunning")?.invoke(codec)
+                        Log.i(TAG, "✅ audioCodec.startRunning() via superclass ${cls.simpleName}")
+                        break
+                    } catch (_: NoSuchFieldException) {
+                        cls = cls.superclass
+                    }
+                }
+            } catch (e2: Exception) {
+                Log.e(TAG, "❌ Fallback also failed: ${e2.message}")
+            }
+        }
+    }
 
     private fun applyAudioSettingsToStream() {
         stream.audioSetting.bitRate = lastBitrate
