@@ -32,6 +32,7 @@ class RtmpClientImpl(
 
     init {
         mixer.registerOutput(stream)
+        mixer.startRunning()  // Required in 0.17.0: audio loop no longer starts automatically
         connection.addEventListener(Event.RTMP_STATUS, this)
     }
 
@@ -111,6 +112,7 @@ class RtmpClientImpl(
     override fun stopStream() {
         try {
             stream.close()
+            mixer.stopRunning()  // Required in 0.17.0: stop the audio capturing loop
             // Detach audio source from mixer to release resources (suspend function)
             runBlocking {
                 mixer.attachAudio(0, null)
