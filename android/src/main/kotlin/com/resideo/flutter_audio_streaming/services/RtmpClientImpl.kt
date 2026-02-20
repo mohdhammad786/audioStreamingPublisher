@@ -34,7 +34,7 @@ class RtmpClientImpl(
 ) : StreamingClient {
 
     private var session: StreamSession? = null
-    private val mixer = MediaMixer(context)
+    private var mixer: MediaMixer? = null
     private var streamingActive: Boolean = false
     private var audioSource: AudioRecordSource? = null
     private var lastUrl: String? = null
@@ -50,8 +50,7 @@ class RtmpClientImpl(
 
     init {
         StreamSession.Builder.registerFactory(RtmpStreamSessionFactory)
-        mixer.startRunning()
-        Log.i(TAG, "INIT: MediaMixer started")
+        Log.i(TAG, "INIT: RtmpClientImpl initialized")
     }
 
     override val isStreaming: Boolean
@@ -65,12 +64,22 @@ class RtmpClientImpl(
         noiseSuppressor: Boolean
     ): Boolean {
         try {
+            // Clean up any existing mixer to prevent thread concurrency crashes
+            mixer?.stopRunning()
+            mixer?.attachAudio(0, null)
+            mixer?.dispose()
+            
+            // Create a brand new mixer for the new session
+            val newMixer = MediaMixer(context)
+            mixer = newMixer
+
             val selectedSource = getBestAudioSource()
             val micSource = AudioRecordSource(context).apply {
                 audioSource = selectedSource
             }
 
-            val attachResult = mixer.attachAudio(0, micSource)
+            // Register the audio source before the mixer's internal loop starts
+            val attachResult = newMixer.attachAudio(0, micSource)
             if (attachResult.isFailure) {
                 Log.e(TAG, "Failed to attach audio: ${attachResult.exceptionOrNull()}")
                 return false
@@ -93,19 +102,30 @@ class RtmpClientImpl(
         lastUrl = url
         Log.i(TAG, "🚀 startStream: Using StreamSession to connect to $url")
 
+        val currentMixer = mixer ?: run {
+            Log.e(TAG, "❌ startStream failed: MediaMixer is null (prepareAudio failed or skipped)")
+            handler.notifyDisconnected("StreamSession.ConnectFailed", "Mixer not initialized")
+            return
+        }
+
         // In 0.17.0+, we MUST build a new StreamSession for every connection
         val newSession = StreamSession.Builder(context, Uri.parse(url)).build()
         
-        // Wire the mixer output to the new session's stream
-        mixer.registerOutput(newSession.stream)
+        // Wire the mixer output to the new session's stream BEFORE starting the loop
+        currentMixer.registerOutput(newSession.stream)
         
-        // Apply audio settings
+        // Apply canonical 0.17+ audio settings
         audioSource?.let {
             newSession.stream.hasAudio = true
             newSession.stream.audioSetting.bitRate = confBitrate
             newSession.stream.audioSetting.sampleRate = confSampleRate
             newSession.stream.audioSetting.channelCount = if (confIsStereo) 2 else 1
         }
+        
+        // NOW start the mixer safely. This guarantees that internal collections
+        // (audioSources and outputs) are fully populated BEFORE the IO loop starts,
+        // avoiding ConcurrentModificationExceptions.
+        currentMixer.startRunning()
 
         // Cancel previous collector
         sessionScope.cancel()
@@ -146,10 +166,17 @@ class RtmpClientImpl(
     }
 
     override fun stopStream() {
+        Log.d(TAG, "stopStream: shutting down session and mixer")
+        
+        val currentMixer = mixer
+        mixer = null // Detach immediately
+
         sessionScope.launch {
             try {
+                // Must stop running FIRST to kill the internal IO loop gracefully
+                currentMixer?.stopRunning()
                 session?.close()
-                session?.let { mixer.unregisterOutput(it.stream) }
+                session?.let { currentMixer?.unregisterOutput(it.stream) }
                 session = null
             } catch (e: Throwable) {
                 Log.e(TAG, "Error closing session", e)
@@ -158,7 +185,8 @@ class RtmpClientImpl(
         
         sessionScope.launch {
             try {
-                mixer.attachAudio(0, null)
+                currentMixer?.attachAudio(0, null)
+                currentMixer?.dispose()
                 audioSource = null
             } catch (e: Throwable) {
                 Log.e(TAG, "Error cleanly detaching audio mix", e)
