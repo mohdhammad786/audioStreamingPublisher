@@ -11,6 +11,7 @@ import android.os.Looper
 import android.util.Log
 import com.haishinkit.media.MediaMixer
 import com.haishinkit.media.source.AudioRecordSource
+import com.haishinkit.rtmp.RtmpStreamSessionFactory
 import com.haishinkit.stream.StreamSession
 import com.resideo.flutter_audio_streaming.interfaces.StreamingClient
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +44,7 @@ class RtmpClientImpl(
     private var sessionScope = CoroutineScope(Dispatchers.Main + Job())
 
     init {
+        StreamSession.Builder.registerFactory(RtmpStreamSessionFactory)
         mixer.startRunning()
         Log.i(TAG, "INIT: MediaMixer started")
     }
