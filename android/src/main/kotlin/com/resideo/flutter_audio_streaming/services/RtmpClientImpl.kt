@@ -155,29 +155,33 @@ class RtmpClientImpl(
                 "NetConnection.Connect.Success" -> {
                     Log.i(TAG, "🔗 Connect.Success — connection.isConnected=${connection.isConnected}")
                     
-                    // Step 2: NOW create the RtmpStream.
-                    // Since connection.isConnected is true, RtmpStream.init{} will
-                    // call connection.createStream(stream) IMMEDIATELY.
-                    val newStream = RtmpStream(context, connection)
-                    stream = newStream
-                    
-                    // Register stream as mixer output so audio data flows through it
-                    mixer.registerOutput(newStream)
-                    
-                    // Configure audio settings on the stream
-                    newStream.audioSetting.bitRate = savedBitrate
-                    newStream.audioSetting.sampleRate = savedSampleRate
-                    newStream.audioSetting.channelCount = if (savedIsStereo) 2 else 1
-                    newStream.hasAudio = true
-                    
-                    Log.i(TAG, "� Stream created — hasAudio=${newStream.hasAudio}")
-                    
-                    // Step 3: Publish. If readyState is already OPEN (createStream
-                    // completed synchronously), this sends the publish message
-                    // immediately. Otherwise it queues for replay when OPEN.
-                    pendingStreamName?.let { name ->
-                        newStream.publish(name)
-                        Log.i(TAG, "🔗 publish('$name') called")
+                    // CRITICAL: Create the RtmpStream OUTSIDE this callback!
+                    // RtmpStream.init{} calls connection.addEventListener() which
+                    // modifies the EventDispatcher's listener list. Since we're
+                    // INSIDE the dispatch loop, this would cause ConcurrentModificationException
+                    // that kills the socket thread. Use mainHandler.post to defer.
+                    mainHandler.post {
+                        if (!connection.isConnected) {
+                            Log.w(TAG, "Connection lost before stream creation")
+                            return@post
+                        }
+                        
+                        val newStream = RtmpStream(context, connection)
+                        stream = newStream
+                        
+                        mixer.registerOutput(newStream)
+                        
+                        newStream.audioSetting.bitRate = savedBitrate
+                        newStream.audioSetting.sampleRate = savedSampleRate
+                        newStream.audioSetting.channelCount = if (savedIsStereo) 2 else 1
+                        newStream.hasAudio = true
+                        
+                        Log.i(TAG, "🔗 Stream created (deferred) — hasAudio=${newStream.hasAudio}")
+                        
+                        pendingStreamName?.let { name ->
+                            newStream.publish(name)
+                            Log.i(TAG, "🔗 publish('$name') called")
+                        }
                     }
                     
                     handler.notifyConnected()
