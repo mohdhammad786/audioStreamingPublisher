@@ -4,7 +4,6 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaRecorder
-import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -13,47 +12,38 @@ import com.haishinkit.media.MediaMixer
 import com.haishinkit.media.source.AudioRecordSource
 import com.haishinkit.rtmp.RtmpConnection
 import com.haishinkit.rtmp.RtmpStream
-import com.haishinkit.rtmp.RtmpStreamSessionFactory
-import com.haishinkit.stream.StreamSession
+import com.haishinkit.rtmp.event.Event
+import com.haishinkit.rtmp.event.IEventListener
 import com.resideo.flutter_audio_streaming.interfaces.StreamingClient
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 /**
- * Uses HaishinKit 0.17.0's official StreamSession API.
- * This is the recommended API — it manages connection, createStream,
- * publish and all RTMP protocol details internally.
+ * MINIMAL delta from the working 0.16.0 code.
  *
- * Pattern taken directly from the official example app:
- * - CameraViewModel.kt (mixer setup, session creation)
- * - CameraScreen.kt (connect/close via coroutine)
- * - RtmpStreamSession.kt (internal implementation)
+ * The ONLY change from 0.16.0 → 0.17.0 is:
+ *   mixer.startRunning() added to init{}
+ *
+ * In 0.16.0, MediaMixer.init{} called doAudio() automatically.
+ * In 0.17.0, the audio capture loop requires an explicit startRunning() call.
+ * Everything else is IDENTICAL to the working 0.16.0 version.
  */
 class RtmpClientImpl(
     private val context: Context,
     private val handler: RtmpConnectionHandler
-) : StreamingClient {
+) : StreamingClient, IEventListener {
 
-    private var mixer: MediaMixer? = null
-    private var session: StreamSession? = null
-    private var scope: CoroutineScope? = null
-
-    // Audio settings saved across sessions
-    private var lastBitrate: Int = 128 * 1024
-    private var lastSampleRate: Int = 44100
-    private var lastChannelCount: Int = 1
-
+    private val connection = RtmpConnection()
+    private val stream = RtmpStream(context, connection)
+    private val mixer = MediaMixer(context)
     private var streamingActive: Boolean = false
+    private var audioSource: AudioRecordSource? = null
     private var lastUrl: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
-        // Register the RTMP factory so StreamSession.Builder can create RTMP sessions
-        StreamSession.Builder.registerFactory(RtmpStreamSessionFactory)
+        mixer.registerOutput(stream)
+        mixer.startRunning()  // ← THE ONLY ADDITION for 0.17.0
+        connection.addEventListener(Event.RTMP_STATUS, this)
     }
 
     override val isStreaming: Boolean
@@ -66,140 +56,63 @@ class RtmpClientImpl(
         echoCanceler: Boolean,
         noiseSuppressor: Boolean
     ): Boolean {
-        return try {
-            lastBitrate = bitrate
-            lastSampleRate = sampleRate
-            lastChannelCount = if (isStereo) 2 else 1
-            Log.i(TAG, "Audio settings saved: bitrate=$bitrate sampleRate=$sampleRate stereo=$isStereo")
-            true
+        try {
+            val selectedSource = getBestAudioSource()
+
+            val micSource = AudioRecordSource(context).apply {
+                audioSource = selectedSource
+            }
+
+            val attachResult = mixer.attachAudio(0, micSource)
+
+            if (attachResult.isFailure) {
+                Log.e(TAG, "Failed to attach source (source=$selectedSource): ${attachResult.exceptionOrNull()}")
+                return false
+            }
+
+            audioSource = micSource
+            stream.audioSetting.bitRate = bitrate
+            stream.audioSetting.sampleRate = sampleRate
+            stream.audioSetting.channelCount = if (isStereo) 2 else 1
+            stream.hasAudio = true
+
+            Log.i(TAG, "Audio prepared: source=$selectedSource bitrate=$bitrate sampleRate=$sampleRate stereo=$isStereo")
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "prepareAudio failed: ${e.message}", e)
-            false
+            return false
         }
     }
 
     override fun startStream(url: String) {
-        // Teardown any previous session
-        teardown()
+        val lastSlash = url.lastIndexOf('/')
+        if (lastSlash == -1) {
+            Log.e(TAG, "Invalid URL: $url")
+            return
+        }
+        val baseUrl = url.substring(0, lastSlash)
+        val streamName = url.substring(lastSlash + 1)
 
         lastUrl = url
+        connection.connect(baseUrl)
+        stream.publish(streamName)
         streamingActive = true
-
-        // Create a new coroutine scope for this session
-        val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-        scope = sessionScope
-
-        // Create session using official API
-        val uri = Uri.parse(url)
-        val newSession = StreamSession.Builder(context, uri)
-            .setMode(StreamSession.Mode.PUBLISH)
-            .build()
-
-        // Create mixer and attach audio (exactly like CameraViewModel)
-        val newMixer = MediaMixer(context)
-
-        // Apply audio settings to the stream
-        val stream = newSession.stream
-        if (stream is RtmpStream) {
-            stream.audioSetting.bitRate = lastBitrate
-            stream.audioSetting.sampleRate = lastSampleRate
-            stream.audioSetting.channelCount = lastChannelCount
-        }
-
-        // Attach audio source (like CameraViewModel.selectAudioDevice)
-        val selectedSource = getBestAudioSource()
-        val micSource = AudioRecordSource(context).apply {
-            audioSource = selectedSource
-        }
-        sessionScope.launch(Dispatchers.IO) {
-            val result = newMixer.attachAudio(0, micSource)
-            if (result.isFailure) {
-                Log.e(TAG, "Failed to attach audio: ${result.exceptionOrNull()}")
-            } else {
-                Log.i(TAG, "Audio source attached successfully")
-            }
-        }
-
-        // Wire mixer → stream and start (exactly like CameraViewModel.init)
-        newMixer.registerOutput(stream)
-        newMixer.startRunning()
-
-        mixer = newMixer
-        session = newSession
-
-        // Connect using coroutine (exactly like CameraScreen)
-        sessionScope.launch {
-            Log.i(TAG, "startStream: connecting to $url")
-            val result = newSession.connect()
-            result.onSuccess {
-                Log.i(TAG, "✅ StreamSession connected and publishing!")
-                handler.notifyConnected()
-            }
-            result.onFailure { error ->
-                Log.e(TAG, "❌ StreamSession connect failed: ${error.message}")
-                streamingActive = false
-                handler.notifyDisconnected(
-                    "NetConnection.Connect.Failed",
-                    error.message
-                )
-            }
-        }
-
-        // Monitor readyState changes
-        sessionScope.launch {
-            newSession.readyState.collect { state ->
-                Log.i(TAG, "📊 StreamSession readyState: $state")
-                when (state) {
-                    StreamSession.ReadyState.CLOSED -> {
-                        if (streamingActive) {
-                            Log.w(TAG, "Session closed while streaming — treating as disconnect")
-                            streamingActive = false
-                            mainHandler.post {
-                                handler.notifyDisconnected(
-                                    "NetConnection.Connect.Closed",
-                                    null
-                                )
-                            }
-                        }
-                    }
-                    else -> {}
-                }
-            }
-        }
+        Log.i(TAG, "startStream: $baseUrl / $streamName")
     }
 
     override fun stopStream() {
-        teardown()
+        try {
+            stream.close()
+            runBlocking { mixer.attachAudio(0, null) }
+            audioSource = null
+            Log.i(TAG, "stopStream: audio source detached")
+        } catch (_: Throwable) {}
+        connection.close()
         streamingActive = false
     }
 
-    private fun teardown() {
-        try {
-            session?.let { s ->
-                scope?.launch {
-                    try { s.close() } catch (_: Throwable) {}
-                }
-            }
-        } catch (_: Throwable) {}
-        try {
-            session?.stream?.let { mixer?.unregisterOutput(it) }
-        } catch (_: Throwable) {}
-        try { mixer?.stopRunning() } catch (_: Throwable) {}
-        try { mixer?.dispose() } catch (_: Throwable) {}
-        try { scope?.cancel() } catch (_: Throwable) {}
-        mixer = null
-        session = null
-        scope = null
-        Log.d(TAG, "teardown: all components destroyed")
-    }
-
-    override fun disableAudio() {
-        session?.stream?.hasAudio = false
-    }
-
-    override fun enableAudio() {
-        session?.stream?.hasAudio = true
-    }
+    override fun disableAudio() { stream.hasAudio = false }
+    override fun enableAudio() { stream.hasAudio = true }
 
     override fun reTry(delay: Long, reason: String): Boolean {
         val url = lastUrl ?: run {
@@ -214,7 +127,24 @@ class RtmpClientImpl(
         return true
     }
 
-    // No handleEvent needed — StreamSession manages all RTMP events internally
+    override fun handleEvent(event: Event) {
+        val data = event.data
+        if (data is Map<*, *>) {
+            val code = data["code"] as? String ?: return
+            Log.w(TAG, "⚡ RTMP EVENT: $code")
+            when (code) {
+                "NetConnection.Connect.Success" -> handler.notifyConnected()
+                "NetConnection.Connect.Closed",
+                "NetConnection.Connect.Failed",
+                "NetConnection.Connect.Rejected" -> {
+                    streamingActive = false
+                    handler.notifyDisconnected(code, data["description"] as? String)
+                }
+                "NetStream.Publish.BadName",
+                "NetStream.Publish.Rejected" -> handler.notifyAuthError(code)
+            }
+        }
+    }
 
     private fun getBestAudioSource(): Int {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return MediaRecorder.AudioSource.MIC
