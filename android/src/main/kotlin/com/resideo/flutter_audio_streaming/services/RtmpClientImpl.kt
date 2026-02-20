@@ -10,6 +10,7 @@ import android.os.Looper
 import android.util.Log
 import com.haishinkit.media.MediaMixer
 import com.haishinkit.media.source.AudioRecordSource
+import com.haishinkit.rtmp.Responder
 import com.haishinkit.rtmp.RtmpConnection
 import com.haishinkit.rtmp.RtmpStream
 import com.haishinkit.rtmp.event.Event
@@ -20,16 +21,9 @@ import kotlinx.coroutines.runBlocking
 /**
  * RtmpClientImpl for HaishinKit 0.17.0.
  *
- * KEY INSIGHT: RtmpStream.init{} calls connection.createStream(stream) ONLY if
- * connection.isConnected is true at construction time. Previously we created the
- * stream before connecting, so createStream was never called.
- * The internal EventListener that should call createStream on Connect.Success
- * doesn't fire reliably in the JitPack build.
- *
- * FIX: Defer RtmpStream creation until AFTER Connect.Success, when
- * connection.isConnected is true. This makes RtmpStream.init{} call
- * createStream immediately → readyState=OPEN → publish message sent
- * → Publish.Start → audio codec starts → audio data flows.
+ * Creates RtmpStream before connecting (the old/stable approach).
+ * After Connect.Success, also sends a MANUAL createStream call
+ * via the public connection.call() API to verify server response.
  */
 class RtmpClientImpl(
     private val context: Context,
@@ -37,20 +31,18 @@ class RtmpClientImpl(
 ) : StreamingClient, IEventListener {
 
     private val connection = RtmpConnection()
+    private val stream = RtmpStream(context, connection)
     private val mixer = MediaMixer(context)
-    
-    // Stream is created lazily after connection succeeds
-    private var stream: RtmpStream? = null
     private var streamingActive: Boolean = false
     private var audioSource: AudioRecordSource? = null
     private var lastUrl: String? = null
-    private var pendingStreamName: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
+        mixer.registerOutput(stream)
         mixer.startRunning()
         connection.addEventListener(Event.RTMP_STATUS, this)
-        Log.i(TAG, "INIT: mixer running, connection listener registered")
+        Log.i(TAG, "INIT: stream+mixer created, listener registered")
     }
 
     override val isStreaming: Boolean
@@ -76,25 +68,18 @@ class RtmpClientImpl(
             }
 
             audioSource = micSource
+            stream.audioSetting.bitRate = bitrate
+            stream.audioSetting.sampleRate = sampleRate
+            stream.audioSetting.channelCount = if (isStereo) 2 else 1
+            stream.hasAudio = true
+
             Log.i(TAG, "Audio prepared: source=$selectedSource bitrate=$bitrate sampleRate=$sampleRate stereo=$isStereo")
-            Log.i(TAG, "AudioRecord state=${micSource.audioRecord?.state}, recording=${micSource.audioRecord?.recordingState}")
-            
-            // Save settings — they'll be applied to the stream when it's created
-            savedBitrate = bitrate
-            savedSampleRate = sampleRate
-            savedIsStereo = isStereo
-            
             return true
         } catch (e: Exception) {
             Log.e(TAG, "prepareAudio failed: ${e.message}", e)
             return false
         }
     }
-    
-    // Audio settings saved for deferred stream configuration
-    private var savedBitrate: Int = 64000
-    private var savedSampleRate: Int = 44100
-    private var savedIsStereo: Boolean = false
 
     override fun startStream(url: String) {
         val lastSlash = url.lastIndexOf('/')
@@ -106,32 +91,27 @@ class RtmpClientImpl(
         val streamName = url.substring(lastSlash + 1)
 
         lastUrl = url
-        pendingStreamName = streamName
         
         Log.i(TAG, "🚀 startStream: connecting to $baseUrl (streamName=$streamName)")
-        Log.i(TAG, "🚀 mixer.running=${mixer.isRunning}, mixer.hasAudio=${mixer.hasAudio}")
         
-        // Step 1: Connect. Stream will be created in handleEvent on Connect.Success.
         connection.connect(baseUrl)
+        stream.publish(streamName)
         streamingActive = true
     }
 
     override fun stopStream() {
         try {
-            stream?.close()
-            stream?.let { mixer.unregisterOutput(it) }
-            stream = null
+            stream.close()
             runBlocking { mixer.attachAudio(0, null) }
             audioSource = null
         } catch (_: Throwable) {}
         connection.close()
         streamingActive = false
-        pendingStreamName = null
         Log.d(TAG, "stopStream: done")
     }
 
-    override fun disableAudio() { stream?.hasAudio = false }
-    override fun enableAudio() { stream?.hasAudio = true }
+    override fun disableAudio() { stream.hasAudio = false }
+    override fun enableAudio() { stream.hasAudio = true }
 
     override fun reTry(delay: Long, reason: String): Boolean {
         val url = lastUrl ?: run {
@@ -150,39 +130,28 @@ class RtmpClientImpl(
         val data = event.data
         if (data is Map<*, *>) {
             val code = data["code"] as? String ?: return
-            Log.w(TAG, "⚡ RTMP EVENT: $code")
+            Log.w(TAG, "⚡ RTMP EVENT: $code | data=$data")
             when (code) {
                 "NetConnection.Connect.Success" -> {
-                    Log.i(TAG, "🔗 Connect.Success — connection.isConnected=${connection.isConnected}")
+                    Log.i(TAG, "🔗 Connect.Success — isConnected=${connection.isConnected}")
                     
-                    // CRITICAL: Create the RtmpStream OUTSIDE this callback!
-                    // RtmpStream.init{} calls connection.addEventListener() which
-                    // modifies the EventDispatcher's listener list. Since we're
-                    // INSIDE the dispatch loop, this would cause ConcurrentModificationException
-                    // that kills the socket thread. Use mainHandler.post to defer.
-                    mainHandler.post {
-                        if (!connection.isConnected) {
-                            Log.w(TAG, "Connection lost before stream creation")
-                            return@post
+                    // DIAGNOSTIC: Send our OWN createStream to verify server responds
+                    Log.i(TAG, "🔬 DIAG: Sending manual createStream via connection.call()...")
+                    connection.call(
+                        "createStream",
+                        object : Responder {
+                            override fun onResult(arguments: List<Any?>) {
+                                Log.i(TAG, "🔬 DIAG: ✅ createStream RESPONSE received! args=$arguments")
+                                // If we get here, the server DID respond.
+                                // arguments[0] should be the stream ID (Double)
+                                val streamId = arguments.getOrNull(0)
+                                Log.i(TAG, "🔬 DIAG: Stream ID = $streamId")
+                            }
+                            override fun onStatus(arguments: List<Any?>) {
+                                Log.i(TAG, "� DIAG: ❌ createStream onStatus: $arguments")
+                            }
                         }
-                        
-                        val newStream = RtmpStream(context, connection)
-                        stream = newStream
-                        
-                        mixer.registerOutput(newStream)
-                        
-                        newStream.audioSetting.bitRate = savedBitrate
-                        newStream.audioSetting.sampleRate = savedSampleRate
-                        newStream.audioSetting.channelCount = if (savedIsStereo) 2 else 1
-                        newStream.hasAudio = true
-                        
-                        Log.i(TAG, "🔗 Stream created (deferred) — hasAudio=${newStream.hasAudio}")
-                        
-                        pendingStreamName?.let { name ->
-                            newStream.publish(name)
-                            Log.i(TAG, "🔗 publish('$name') called")
-                        }
-                    }
+                    )
                     
                     handler.notifyConnected()
                 }
