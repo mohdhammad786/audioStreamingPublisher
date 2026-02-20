@@ -40,6 +40,11 @@ class RtmpClientImpl(
     private var lastUrl: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     
+    // Cached audio configuration
+    private var confBitrate: Int = 64 * 1024
+    private var confSampleRate: Int = 44100
+    private var confIsStereo: Boolean = true
+    
     // Scope to collect the session state flow
     private var sessionScope = CoroutineScope(Dispatchers.Main + Job())
 
@@ -71,7 +76,11 @@ class RtmpClientImpl(
                 return false
             }
 
-            audioSource = micSource
+            this.confBitrate = bitrate
+            this.confSampleRate = sampleRate
+            this.confIsStereo = isStereo
+            this.audioSource = micSource
+            
             Log.i(TAG, "Audio prepared: source=$selectedSource bitrate=$bitrate sampleRate=$sampleRate stereo=$isStereo")
             return true
         } catch (e: Exception) {
@@ -93,7 +102,9 @@ class RtmpClientImpl(
         // Apply audio settings
         audioSource?.let {
             newSession.stream.hasAudio = true
-            // The audio pipeline is already setup in prepareAudio via mixer.attachAudio
+            newSession.stream.audioSetting.bitRate = confBitrate
+            newSession.stream.audioSetting.sampleRate = confSampleRate
+            newSession.stream.audioSetting.channelCount = if (confIsStereo) 2 else 1
         }
 
         // Cancel previous collector
