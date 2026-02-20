@@ -135,20 +135,60 @@ class RtmpClientImpl(
                 "NetConnection.Connect.Success" -> {
                     Log.i(TAG, "🔗 Connect.Success — isConnected=${connection.isConnected}")
                     
-                    // DIAGNOSTIC: Send our OWN createStream to verify server responds
-                    Log.i(TAG, "🔬 DIAG: Sending manual createStream via connection.call()...")
+                    // The core bug is that HaishinKit 0.17.0+ (on JitPack) fails to internally
+                    // call createStream on Connect.Success. We must drive the RTMP protocol manually.
+                    Log.i(TAG, "🛠️ Manually driving createStream protocol...")
+                    
                     connection.call(
                         "createStream",
                         object : Responder {
                             override fun onResult(arguments: List<Any?>) {
-                                Log.i(TAG, "🔬 DIAG: ✅ createStream RESPONSE received! args=$arguments")
-                                // If we get here, the server DID respond.
-                                // arguments[0] should be the stream ID (Double)
-                                val streamId = arguments.getOrNull(0)
-                                Log.i(TAG, "🔬 DIAG: Stream ID = $streamId")
+                                val streamId = (arguments.getOrNull(0) as? Double)?.toInt() ?: return
+                                Log.i(TAG, "✅ Server assigned Stream ID: $streamId")
+                                
+                                try {
+                                    // 1. Set stream.id
+                                    val idField = RtmpStream::class.java.getDeclaredField("id")
+                                    idField.isAccessible = true
+                                    idField.setInt(stream, streamId)
+                                    
+                                    // 2. Add to connection.streams map
+                                    val streamsField = RtmpConnection::class.java.getDeclaredField("streams")
+                                    streamsField.isAccessible = true
+                                    val streamsMap = streamsField.get(connection) as MutableMap<Int, RtmpStream>
+                                    streamsMap[streamId] = stream
+                                    
+                                    // 3. Set stream.readyState = OPEN.
+                                    // CRITICAL: We MUST invoke the setter method, NOT set the backing field!
+                                    // The Kotlin setter contains the logic that flushes the queued publish() message!
+                                    val readyStateEnumClass = Class.forName("com.haishinkit.rtmp.RtmpStream\$ReadyState")
+                                    val openEnumValue = readyStateEnumClass.enumConstants?.firstOrNull { it.toString() == "OPEN" }
+                                    
+                                    if (openEnumValue != null) {
+                                        // Find the setReadyState method (Kotlin generates this for the var property)
+                                        // Note: internal setters might have name mangling in Java (e.g. setReadyState$haishinkit_release)
+                                        // So we search for any method starting with "setReadyState"
+                                        val setReadyStateMethod = RtmpStream::class.java.methods.firstOrNull { 
+                                            it.name.startsWith("setReadyState") && it.parameterTypes.size == 1 
+                                        }
+                                        
+                                        if (setReadyStateMethod != null) {
+                                            setReadyStateMethod.isAccessible = true
+                                            setReadyStateMethod.invoke(stream, openEnumValue)
+                                            Log.i(TAG, "✅ Forced stream readyState to OPEN via setter (${setReadyStateMethod.name}).")
+                                        } else {
+                                            Log.e(TAG, "❌ Could not find setReadyState method!")
+                                        }
+                                    } else {
+                                        Log.e(TAG, "❌ Could not find ReadyState.OPEN enum value")
+                                    }
+                                    
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "❌ Reflection manually routing stream failed", e)
+                                }
                             }
                             override fun onStatus(arguments: List<Any?>) {
-                                Log.i(TAG, "� DIAG: ❌ createStream onStatus: $arguments")
+                                Log.e(TAG, "❌ createStream failed: $arguments")
                             }
                         }
                     )
