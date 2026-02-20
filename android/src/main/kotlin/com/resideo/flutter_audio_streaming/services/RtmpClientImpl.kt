@@ -19,13 +19,19 @@ import com.resideo.flutter_audio_streaming.interfaces.StreamingClient
 import kotlinx.coroutines.runBlocking
 
 /**
- * Modeled EXACTLY after HaishinKit's own RtmpStreamSession.kt from version 0.17.0.
- * See: https://github.com/HaishinKit/HaishinKit.kt/blob/0.17.0/rtmp/src/main/java/com/haishinkit/rtmp/RtmpStreamSession.kt
+ * Modeled after HaishinKit's own RtmpStreamSession.kt (0.17.0).
  *
- * Key patterns from the official implementation:
- * 1. Register OUR listener on connection FIRST, then create RtmpStream
- * 2. Call publish() INSIDE the Connect.Success handler (not before connect)
- * 3. Listen on BOTH connection AND stream for RTMP_STATUS events
+ * CRITICAL CHAIN for audio to flow:
+ *   mixer.attachAudio(source) → mixer.hasAudio = true
+ *   mixer.registerOutput(stream) → stream.dataSource = mixer
+ *   stream.hasAudio getter returns mixer.hasAudio (via dataSource)
+ *   When readyState=PUBLISHING → Stream.startRunning() checks hasAudio
+ *   If hasAudio=true → audioCodec.startRunning() → audio flows
+ *   If hasAudio=false → audioCodec NEVER starts → server times out
+ *
+ * Therefore: mixer must have audio attached BEFORE publish succeeds.
+ * stopStream() must NOT detach audio from mixer — only close stream/connection.
+ * Audio source is re-attached in prepareAudio() which is called before each session.
  */
 class RtmpClientImpl(
     private val context: Context,
@@ -49,7 +55,6 @@ class RtmpClientImpl(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
-        // Match official pattern: register on both connection and stream
         connection.addEventListener(Event.RTMP_STATUS, this)
         stream.addEventListener(Event.RTMP_STATUS, this)
         mixer.registerOutput(stream)
@@ -58,9 +63,10 @@ class RtmpClientImpl(
 
     /**
      * Creates fresh connection + stream pair.
-     * Matches the RtmpStreamSession.init{} pattern exactly:
+     * Matches the RtmpStreamSession.init{} ordering:
      * 1. Create connection, add OUR listener
      * 2. Create stream, add OUR listener
+     * 3. Wire mixer
      */
     private fun createFreshSession() {
         Log.d(TAG, "createFreshSession")
@@ -68,7 +74,6 @@ class RtmpClientImpl(
         try { stream.removeEventListener(Event.RTMP_STATUS, this) } catch (_: Throwable) {}
         try { mixer.unregisterOutput(stream) } catch (_: Throwable) {}
 
-        // Exactly like RtmpStreamSession.init{}:
         connection = RtmpConnection()
         connection.addEventListener(Event.RTMP_STATUS, this)
         stream = RtmpStream(context, connection)
@@ -128,20 +133,20 @@ class RtmpClientImpl(
         pendingStreamName = streamName
         streamingActive = true
 
-        // CRITICAL: Do NOT call stream.publish() here!
-        // In 0.17.0, publish must be called INSIDE the Connect.Success handler.
-        // This matches the official RtmpStreamSession pattern exactly.
+        // Publish is called inside Connect.Success handler (official 0.17.0 pattern)
         connection.connect(baseUrl)
-        Log.i(TAG, "startStream: connecting to $baseUrl (publish will be called on Connect.Success)")
+        Log.i(TAG, "startStream: connecting to $baseUrl (publish on Connect.Success)")
     }
 
     override fun stopStream() {
         pendingStreamName = null
         try {
             stream.close()
-            runBlocking { mixer.attachAudio(0, null) }
-            audioSource = null
-            Log.i(TAG, "stopStream: audio source detached")
+            // DO NOT detach audio from mixer here!
+            // mixer.hasAudio must remain true so that Stream.startRunning()
+            // calls audioCodec.startRunning() on the next session.
+            // Audio will be re-attached in the next prepareAudio() call.
+            Log.i(TAG, "stopStream: stream closed")
         } catch (_: Throwable) {}
         try { connection.close() } catch (_: Throwable) {}
         streamingActive = false
@@ -164,7 +169,7 @@ class RtmpClientImpl(
     }
 
     // -------------------------------------------------------------------------
-    // IEventListener — matches RtmpStreamSession.handleEvent() exactly
+    // IEventListener — matches RtmpStreamSession.handleEvent()
     // -------------------------------------------------------------------------
 
     override fun handleEvent(event: Event) {
@@ -174,20 +179,16 @@ class RtmpClientImpl(
         Log.w(TAG, "⚡ RTMP EVENT: $code | data=$data")
 
         when (code) {
-            // Official pattern: call publish() inside Connect.Success
             RtmpConnection.Code.CONNECT_SUCCESS.rawValue -> {
                 Log.i(TAG, "🔗 Connected — calling publish('$pendingStreamName')")
                 pendingStreamName?.let { stream.publish(it) }
                 handler.notifyConnected()
             }
 
-            // Publish acknowledged — stream is live
             RtmpStream.Code.PUBLISH_START.rawValue -> {
-                Log.i(TAG, "🎙️ Publish.Start — stream is live, starting audio codec")
-                startAudioCodecForEncoding()
+                Log.i(TAG, "🎙️ Publish.Start — stream is live")
             }
 
-            // Connection closed/failed
             RtmpConnection.Code.CONNECT_CLOSED.rawValue,
             RtmpConnection.Code.CONNECT_FAILED.rawValue,
             RtmpConnection.Code.CONNECT_REJECTED.rawValue -> {
@@ -195,7 +196,6 @@ class RtmpClientImpl(
                 handler.notifyDisconnected(code, data["description"]?.toString())
             }
 
-            // Auth errors
             "NetStream.Publish.BadName",
             "NetStream.Publish.Rejected" -> handler.notifyAuthError(code)
         }
@@ -204,25 +204,6 @@ class RtmpClientImpl(
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
-
-    private fun startAudioCodecForEncoding() {
-        try {
-            var cls: Class<*>? = stream.javaClass
-            while (cls != null) {
-                try {
-                    val f = cls.getDeclaredField("audioCodec")
-                    f.isAccessible = true
-                    val codec = f.get(stream)
-                    codec?.javaClass?.getMethod("startRunning")?.invoke(codec)
-                    Log.i(TAG, "✅ audioCodec.startRunning() via ${cls.simpleName}")
-                    return
-                } catch (_: NoSuchFieldException) { cls = cls.superclass }
-            }
-            Log.e(TAG, "❌ audioCodec field not found in class hierarchy")
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ audioCodec.startRunning() failed: ${e.message}")
-        }
-    }
 
     private fun applyAudioSettingsToStream() {
         stream.audioSetting.bitRate = lastBitrate
