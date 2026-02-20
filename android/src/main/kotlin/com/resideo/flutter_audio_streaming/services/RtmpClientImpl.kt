@@ -187,6 +187,8 @@ class RtmpClientImpl(
 
             RtmpStream.Code.PUBLISH_START.rawValue -> {
                 Log.i(TAG, "🎙️ Publish.Start — stream is live")
+                // Dump full audio pipeline state after 2 seconds
+                mainHandler.postDelayed({ dumpAudioChainState() }, 2000)
             }
 
             RtmpConnection.Code.CONNECT_CLOSED.rawValue,
@@ -204,6 +206,76 @@ class RtmpClientImpl(
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * 🔍 DIAGNOSTIC: Dumps the full audio pipeline state via reflection.
+     * Remove this after the bug is fixed.
+     */
+    private fun dumpAudioChainState() {
+        try {
+            Log.e(TAG, "═══ AUDIO CHAIN DIAGNOSTIC ═══")
+            Log.e(TAG, "stream.hasAudio = ${stream.hasAudio}")
+            Log.e(TAG, "stream class = ${stream.javaClass.name}")
+
+            // Check Stream.isRunning
+            var cls: Class<*>? = stream.javaClass
+            while (cls != null) {
+                try {
+                    val isRunningField = cls.getDeclaredField("isRunning")
+                    isRunningField.isAccessible = true
+                    val isRunningVal = isRunningField.get(stream)
+                    Log.e(TAG, "stream.isRunning (${cls.simpleName}) = $isRunningVal")
+                    break
+                } catch (_: NoSuchFieldException) { cls = cls.superclass }
+            }
+
+            // Dump ALL field names in the class hierarchy
+            cls = stream.javaClass
+            while (cls != null && cls != Any::class.java) {
+                val fieldNames = cls.declaredFields.map { it.name }
+                Log.e(TAG, "Fields in ${cls.simpleName}: $fieldNames")
+                cls = cls.superclass
+            }
+
+            // Try to find audioCodec via various possible field names
+            cls = stream.javaClass
+            while (cls != null && cls != Any::class.java) {
+                for (field in cls.declaredFields) {
+                    if (field.name.contains("audio", ignoreCase = true) ||
+                        field.name.contains("codec", ignoreCase = true)) {
+                        field.isAccessible = true
+                        val value = field.get(stream)
+                        Log.e(TAG, "  ${cls.simpleName}.${field.name} = $value (type=${field.type.simpleName})")
+                        // If it's a Lazy, try to get its value
+                        if (value is Lazy<*>) {
+                            val lazyVal = value.value
+                            Log.e(TAG, "    └─ Lazy.value = $lazyVal")
+                            // Check if it has isRunning
+                            try {
+                                val irField = lazyVal?.javaClass?.getDeclaredField("isRunning")
+                                    ?: lazyVal?.javaClass?.superclass?.getDeclaredField("isRunning")
+                                irField?.isAccessible = true
+                                Log.e(TAG, "    └─ isRunning = ${irField?.get(lazyVal)}")
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
+                cls = cls.superclass
+            }
+
+            // Check mixer state
+            Log.e(TAG, "mixer.hasAudio = (checking via dataSource)")
+            val dsField = stream.javaClass.superclass?.getDeclaredField("dataSource")
+                ?: stream.javaClass.getDeclaredField("dataSource")
+            dsField.isAccessible = true
+            val ds = dsField.get(stream)
+            Log.e(TAG, "stream.dataSource = $ds (null=${ds == null})")
+
+            Log.e(TAG, "═══ END DIAGNOSTIC ═══")
+        } catch (e: Exception) {
+            Log.e(TAG, "Diagnostic failed: ${e.message}", e)
+        }
+    }
 
     private fun applyAudioSettingsToStream() {
         stream.audioSetting.bitRate = lastBitrate
