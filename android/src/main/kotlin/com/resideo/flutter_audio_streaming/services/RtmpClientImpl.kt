@@ -197,6 +197,8 @@ class RtmpClientImpl(
         val data = event.data
         if (data is Map<*, *>) {
             val code = data["code"] as? String ?: return
+            // 🔍 DIAGNOSTIC: log EVERY event to see full server→client sequence
+            Log.w(TAG, "⚡ RTMP EVENT: $code | desc=${data["description"]}")
             when (code) {
                 "NetConnection.Connect.Success" -> handler.notifyConnected()
                 "NetConnection.Connect.Closed",
@@ -207,10 +209,6 @@ class RtmpClientImpl(
                 }
                 "NetStream.Publish.BadName",
                 "NetStream.Publish.Rejected" -> handler.notifyAuthError(code)
-                // HaishinKit 0.17.0 fix: when publish is acknowledged by the server,
-                // readyState=PUBLISHING has fired (startRunning() sets isRunning=true on Stream)
-                // but audioCodec.startRunning() is NOT called in the encode path.
-                // We must start it here so AudioCodec.append() stops dropping audio.
                 "NetStream.Publish.Start" -> startAudioCodecForEncoding()
             }
         }
