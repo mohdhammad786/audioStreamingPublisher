@@ -3,8 +3,12 @@ package com.resideo.flutter_audio_streaming.services
 import android.Manifest
 import android.content.Context
 import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioDeviceInfo
+import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresPermission
+import android.media.MediaRecorder
 import com.resideo.flutter_audio_streaming.interfaces.StreamingClient
 import io.github.thibaultbee.streampack.core.elements.sources.audio.audiorecord.MicrophoneSourceFactory
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
@@ -37,11 +41,11 @@ class RtmpClientImpl(
         bitrate: Int,
         sampleRate: Int,
         isStereo: Boolean,
-        echoCanceler: Boolean, // StreamPack supports these intrinsically depending on hardware
+        echoCanceler: Boolean, // Used to select hardware Mic profile
         noiseSuppressor: Boolean
     ): Boolean {
         try {
-            Log.i(TAG, "prepareAudio: bitrate=$bitrate sampleRate=$sampleRate isStereo=$isStereo")
+            Log.i(TAG, "prepareAudio: bitrate=$bitrate sampleRate=$sampleRate isStereo=$isStereo echoCanceler=$echoCanceler")
             this.confBitrate = bitrate
             this.confSampleRate = sampleRate
             this.confIsStereo = isStereo
@@ -49,11 +53,19 @@ class RtmpClientImpl(
             // Release any previously active streamer to avoid memory/hardware leaks
             streamer?.release()
             
+            // Critical optimization for low-end / median Android hardware (e.g. Redmi):
+            // We bypass software processing by initializing Android's native `VOICE_COMMUNICATION` profile 
+            // when using built-in mics. If a USB OTG mic is connected, we MUST use DEFAULT/MIC to support it properly.
+            val micSource = getBestAudioSource(echoCanceler, noiseSuppressor)
+
             // We instantiate the streamer. This requires coroutines context as it's a suspend function
             // but our prepareAudio is already suspend
             streamer = AudioOnlySingleStreamer(
                 context = context,
-                audioSourceFactory = MicrophoneSourceFactory()
+                audioSourceFactory = MicrophoneSourceFactory(
+                    audioSource = micSource,
+                    effects = emptySet() // Explicitly disable software AEC & NS to avoid double processing dropping frames
+                )
             )
 
             // StreamPack AudioConfig uses startBitrate, sampleRate, and channelConfig
@@ -153,6 +165,26 @@ class RtmpClientImpl(
         stopStream()
         lastUrl?.let { startStream(it) }
         return true
+    }
+
+    private fun getBestAudioSource(echoCanceler: Boolean, noiseSuppressor: Boolean): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return MediaRecorder.AudioSource.MIC
+        
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val hasExternalMic = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).any {
+            it.type == AudioDeviceInfo.TYPE_USB_DEVICE || it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+        }
+        
+        return if (hasExternalMic) {
+            Log.i(TAG, "✅ External USB mic detected — bypassing hardware DSP and using AudioSource.DEFAULT")
+            MediaRecorder.AudioSource.DEFAULT
+        } else if (echoCanceler || noiseSuppressor) {
+            Log.i(TAG, "ℹ️ Built-in mic with AEC/NS — using AudioSource.VOICE_COMMUNICATION")
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        } else {
+            Log.i(TAG, "ℹ️ Built-in raw mic — using AudioSource.MIC")
+            MediaRecorder.AudioSource.MIC
+        }
     }
 
     companion object {

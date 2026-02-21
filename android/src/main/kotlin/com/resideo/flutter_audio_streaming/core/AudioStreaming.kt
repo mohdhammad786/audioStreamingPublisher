@@ -153,10 +153,10 @@ class AudioStreaming(
 
     private suspend fun prepareInternal(): Boolean {
         return rtmpAudio.prepareAudio(
-            streamingContext.bitrate ?: (128 * 1024),
+            streamingContext.bitrate ?: (64 * 1024), // 64 kbps ensures smoother stream over spotty connections
             streamingContext.sampleRate ?: 44100,
-            streamingContext.isStereo ?: true,
-            streamingContext.echoCanceler ?: false,
+            streamingContext.isStereo ?: false, // Default to false (Mono) to avoid stutter when upmixing on single-mic phones
+            streamingContext.echoCanceler ?: true,
             streamingContext.noiseSuppressor ?: true
         )
     }
