@@ -2,6 +2,7 @@ package com.resideo.flutter_audio_streaming.services
 
 import android.content.Context
 import android.media.AudioDeviceInfo
+import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.MediaRecorder
 import android.net.Uri
@@ -74,8 +75,16 @@ class RtmpClientImpl(
             mixer = newMixer
 
             val selectedSource = getBestAudioSource()
+            
+            // CRITICAL FIX: Configure AudioRecordSource to match our desired settings.
+            // The AudioRecordSource channel determines what the mic ACTUALLY records.
+            // The codec channelCount must MATCH this, otherwise the encoder receives
+            // mismatched PCM data and produces no output → server timeout.
+            val micChannel = if (isStereo) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
             val micSource = AudioRecordSource(context).apply {
                 audioSource = selectedSource
+                channel = micChannel
+                this.sampleRate = sampleRate
             }
 
             // Register the audio source before the mixer's internal loop starts
@@ -90,7 +99,7 @@ class RtmpClientImpl(
             this.confIsStereo = isStereo
             this.audioSource = micSource
             
-            Log.i(TAG, "Audio prepared: source=$selectedSource bitrate=$bitrate sampleRate=$sampleRate stereo=$isStereo")
+            Log.i(TAG, "Audio prepared: source=$selectedSource bitrate=$bitrate sampleRate=$sampleRate stereo=$isStereo micChannel=${if (isStereo) "STEREO" else "MONO"}")
             return true
         } catch (e: Exception) {
             Log.e(TAG, "prepareAudio failed: ${e.message}", e)
@@ -111,15 +120,22 @@ class RtmpClientImpl(
         // In 0.17.0+, we MUST build a new StreamSession for every connection
         val newSession = StreamSession.Builder(context, Uri.parse(url)).build()
         
-        // Wire the mixer output to the new session's stream BEFORE starting the loop
+        // Wire the mixer output to the new session's stream BEFORE starting the loop.
+        // After this call, stream.hasAudio delegates to mixer.hasAudio (audioSources.isNotEmpty())
+        // so there is NO need to set stream.hasAudio = true manually.
         currentMixer.registerOutput(newSession.stream)
         
-        // Apply canonical 0.17+ audio settings
+        // CRITICAL FIX: Only set bitRate on the codec. channelCount and sampleRate
+        // are already configured on the AudioRecordSource (in prepareAudio) and the
+        // codec defaults (44100Hz, MONO) match what AudioRecordSource records.
+        // Setting channelCount=2 when AudioRecordSource records MONO causes the AAC
+        // encoder to receive mismatched PCM data → no output frames → server timeout.
         audioSource?.let {
-            newSession.stream.hasAudio = true
             newSession.stream.audioSetting.bitRate = confBitrate
+            // Match codec settings to what AudioRecordSource is actually recording
             newSession.stream.audioSetting.sampleRate = confSampleRate
             newSession.stream.audioSetting.channelCount = if (confIsStereo) 2 else 1
+            Log.i(TAG, "🎤 Audio codec configured: bitRate=$confBitrate sampleRate=$confSampleRate channelCount=${if (confIsStereo) 2 else 1}")
         }
         
         // NOW start the mixer safely. This guarantees that internal collections
@@ -157,7 +173,10 @@ class RtmpClientImpl(
 
         // Connect (which internally drives rtmpStream.publish when ready)
         sessionScope.launch {
-            newSession.connect().onFailure { error ->
+            Log.i(TAG, "🔌 Calling session.connect()...")
+            newSession.connect().onSuccess {
+                Log.i(TAG, "✅ session.connect() completed successfully")
+            }.onFailure { error ->
                 Log.e(TAG, "❌ Session connect failed: ${error.message}", error)
                 streamingActive = false
                 handler.notifyDisconnected("StreamSession.ConnectFailed", error.message)
@@ -169,31 +188,33 @@ class RtmpClientImpl(
         Log.d(TAG, "stopStream: shutting down session and mixer")
         
         val currentMixer = mixer
+        val currentSession = session
         mixer = null // Detach immediately
+        session = null
+        streamingActive = false
 
+        // Single coroutine for shutdown to avoid race conditions between
+        // parallel coroutines interfering with each other's cleanup.
         sessionScope.launch {
             try {
-                // Must stop running FIRST to kill the internal IO loop gracefully
+                // 1. Stop the mixer's IO loop first so no more audio is fed
                 currentMixer?.stopRunning()
-                session?.close()
-                session?.let { currentMixer?.unregisterOutput(it.stream) }
-                session = null
-            } catch (e: Throwable) {
-                Log.e(TAG, "Error closing session", e)
-            }
-        }
-        
-        sessionScope.launch {
-            try {
+                
+                // 2. Close the RTMP session
+                currentSession?.close()
+                
+                // 3. Unregister the stream output from the mixer
+                currentSession?.let { currentMixer?.unregisterOutput(it.stream) }
+                
+                // 4. Detach audio source and dispose mixer
                 currentMixer?.attachAudio(0, null)
                 currentMixer?.dispose()
                 audioSource = null
             } catch (e: Throwable) {
-                Log.e(TAG, "Error cleanly detaching audio mix", e)
+                Log.e(TAG, "Error during stopStream cleanup", e)
             }
         }
         
-        streamingActive = false
         Log.d(TAG, "stopStream: done")
     }
 
