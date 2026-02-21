@@ -9,7 +9,10 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.haishinkit.media.MediaBuffer
 import com.haishinkit.media.MediaMixer
+import com.haishinkit.media.MediaOutput
+import com.haishinkit.media.MediaOutputDataSource
 import com.haishinkit.media.source.AudioRecordSource
 import com.haishinkit.rtmp.RtmpConnection
 import com.haishinkit.rtmp.RtmpStream
@@ -21,14 +24,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * RtmpClientImpl for HaishinKit 0.18.2.
  *
- * BYPASSES the StreamSession abstraction (which has an aggressive catch-all
- * that kills the session on any unrecognised RTMP status event) and instead
- * drives RtmpConnection + RtmpStream + MediaMixer directly — the same
- * pattern that worked reliably with 0.16, adapted for 0.18's API surface.
+ * Uses direct RtmpConnection + RtmpStream + MediaMixer (bypasses StreamSession).
+ * KEY FIX: Starts the mixer ONLY after PUBLISH_START to ensure the audio codec
+ * is running before audio data arrives (avoids data being silently dropped).
  */
 class RtmpClientImpl(
     private val context: Context,
@@ -52,6 +56,10 @@ class RtmpClientImpl(
     // Scope for coroutines
     private var scope = CoroutineScope(Dispatchers.Main + Job())
 
+    // Diagnostics
+    private val audioBufferCount = AtomicLong(0)
+    private val lastLogTime = AtomicLong(0)
+
     override val isStreaming: Boolean
         get() = streamingActive
 
@@ -63,19 +71,15 @@ class RtmpClientImpl(
         noiseSuppressor: Boolean
     ): Boolean {
         try {
-            // Clean up any existing mixer to prevent thread concurrency crashes
+            // Clean up any existing mixer
             mixer?.stopRunning()
             mixer?.attachAudio(0, null)
             mixer?.dispose()
             
-            // Create a brand new mixer for the new session
             val newMixer = MediaMixer(context)
             mixer = newMixer
 
             val selectedSource = getBestAudioSource()
-            
-            // Configure AudioRecordSource to match our desired settings.
-            // The mic channel and codec channelCount MUST match.
             val micChannel = if (isStereo) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
             val micSource = AudioRecordSource(context).apply {
                 audioSource = selectedSource
@@ -83,7 +87,6 @@ class RtmpClientImpl(
                 this.sampleRate = sampleRate
             }
 
-            // Register the audio source
             val attachResult = newMixer.attachAudio(0, micSource)
             if (attachResult.isFailure) {
                 Log.e(TAG, "Failed to attach audio: ${attachResult.exceptionOrNull()}")
@@ -108,12 +111,12 @@ class RtmpClientImpl(
         Log.i(TAG, "🚀 startStream: Direct RtmpConnection+RtmpStream to $url")
 
         val currentMixer = mixer ?: run {
-            Log.e(TAG, "❌ startStream failed: MediaMixer is null (prepareAudio failed or skipped)")
+            Log.e(TAG, "❌ startStream failed: MediaMixer is null")
             handler.notifyDisconnected("ConnectFailed", "Mixer not initialized")
             return
         }
 
-        // Parse URL into tcUrl (connection URL) and streamName (publish name)
+        // Parse URL
         val uri = java.net.URI.create(url)
         val pathSegments = uri.path.split("/").filter { it.isNotEmpty() }
         if (pathSegments.size < 2) {
@@ -129,43 +132,37 @@ class RtmpClientImpl(
         
         Log.i(TAG, "📡 tcUrl=$tcUrl streamName=$streamName")
 
-        // --- Create Connection ---
+        // Create Connection
         val newConnection = RtmpConnection()
         newConnection.addEventListener(Event.RTMP_STATUS, this)
         newConnection.addEventListener(Event.IO_ERROR, this)
 
-        // --- Create Stream ---
+        // Create Stream
         val newStream = RtmpStream(context, newConnection)
         newStream.addEventListener(Event.RTMP_STATUS, this)
         
-        // Configure audio codec settings on the stream
+        // Configure audio codec
         newStream.audioSetting.bitRate = confBitrate
         newStream.audioSetting.sampleRate = confSampleRate
         newStream.audioSetting.channelCount = if (confIsStereo) 2 else 1
         Log.i(TAG, "🎤 Audio codec: bitRate=$confBitrate sampleRate=$confSampleRate ch=${if (confIsStereo) 2 else 1}")
 
-        // Wire the mixer output to the stream
+        // Wire mixer → stream
         currentMixer.registerOutput(newStream)
 
-        // Start the mixer (begins audio capture loop)
-        currentMixer.startRunning()
-        Log.i(TAG, "🎙️ Mixer started, audio capture loop running")
+        // DO NOT start the mixer yet — wait for PUBLISH_START.
+        // Starting it now means audio data arrives before the codec is running,
+        // so it gets silently dropped by Stream.append() (isRunning=false).
 
         // Store references
         this.connection = newConnection
         this.stream = newStream
+        audioBufferCount.set(0)
 
-        // Connect to the RTMP server.
-        // The RtmpStream's internal EventListener handles CONNECT_SUCCESS → createStream.
-        // Our handleEvent below catches PUBLISH_START to confirm publishing.
         Log.i(TAG, "🔌 Connecting to $tcUrl ...")
         newConnection.connect(tcUrl)
     }
 
-    /**
-     * Handles RTMP status events from both the Connection and Stream.
-     * This replaces the StreamSession wrapper and gives us full control.
-     */
     override fun handleEvent(event: Event) {
         val data = EventUtils.toMap(event)
         val code = data["code"]?.toString() ?: ""
@@ -185,18 +182,11 @@ class RtmpClientImpl(
         }
 
         when (code) {
-            // Connection events
             RtmpConnection.Code.CONNECT_SUCCESS.rawValue -> {
-                Log.i(TAG, "✅ NetConnection.Connect.Success — createStream will be called by RtmpStream internally")
-                // RtmpStream's internal EventListener automatically calls
-                // connection.createStream(stream) on CONNECT_SUCCESS.
-                // After createStream succeeds, readyState → OPEN, which flushes
-                // the queued publish command.
-                //
-                // We just need to call stream.publish(name) to queue the command.
+                Log.i(TAG, "✅ NetConnection.Connect.Success")
                 stream?.let { s ->
                     pendingStreamName?.let { name ->
-                        Log.i(TAG, "� Queueing publish('$name')")
+                        Log.i(TAG, "📤 Queueing publish('$name')")
                         s.publish(name)
                     }
                 }
@@ -216,11 +206,26 @@ class RtmpClientImpl(
                 handler.notifyDisconnected("Connect.Failed", description)
             }
 
-            // Stream events
             RtmpStream.Code.PUBLISH_START.rawValue -> {
-                Log.i(TAG, "✅ NetStream.Publish.Start — AUDIO IS NOW FLOWING!")
+                Log.i(TAG, "✅ NetStream.Publish.Start — starting mixer NOW")
+                
+                // KEY FIX: Start mixer AFTER publish is confirmed.
+                // The RtmpStream's readyState is now PUBLISHING, so startRunning()
+                // has already been called internally, audioCodec is active,
+                // and Stream.isRunning = true. Audio data will flow end-to-end.
+                val currentMixer = mixer
+                if (currentMixer != null) {
+                    currentMixer.startRunning()
+                    Log.i(TAG, "🎙️ Mixer started — audio capture loop running, data should flow now")
+                } else {
+                    Log.e(TAG, "❌ Mixer is null at PUBLISH_START!")
+                }
+                
                 streamingActive = true
                 handler.notifyConnected()
+                
+                // Start a diagnostic logger to confirm data flow
+                startDiagnosticLogger()
             }
 
             RtmpStream.Code.CONNECT_CLOSED.rawValue -> {
@@ -239,17 +244,32 @@ class RtmpClientImpl(
                 }
             }
 
-            // All other events: just log them but DO NOT kill the connection.
-            // This is the critical difference from StreamSession which would
-            // set readyState=CLOSED on any unrecognized code.
             else -> {
-                Log.d(TAG, "ℹ️ Unhandled RTMP code: $code (ignoring, stream continues)")
+                Log.d(TAG, "ℹ️ Unhandled RTMP code: $code (ignoring)")
             }
         }
     }
 
+    private fun startDiagnosticLogger() {
+        // Log connection stats every 2 seconds while streaming
+        val diagnosticRunnable = object : Runnable {
+            override fun run() {
+                if (!streamingActive) return
+                val conn = connection
+                if (conn != null) {
+                    val bytesOut = conn.totalBytesOut
+                    val bytesIn = conn.totalBytesIn
+                    val connected = conn.isConnected
+                    Log.i(TAG, "📊 DIAG: bytesOut=$bytesOut bytesIn=$bytesIn connected=$connected mixerRunning=${mixer?.isRunning?.get()}")
+                }
+                mainHandler.postDelayed(this, 2000)
+            }
+        }
+        mainHandler.postDelayed(diagnosticRunnable, 1000)
+    }
+
     override fun stopStream() {
-        Log.d(TAG, "stopStream: shutting down connection, stream, and mixer")
+        Log.d(TAG, "stopStream: shutting down")
         
         val currentMixer = mixer
         val currentStream = stream
