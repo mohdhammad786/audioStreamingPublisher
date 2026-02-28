@@ -28,7 +28,12 @@ class RtmpClientImpl(
     private var streamer: AudioOnlySingleStreamer? = null
     private var streamingActive: Boolean = false
     private var lastUrl: String? = null
-    
+
+    // Local SSL-to-TCP proxy for rtmps:// streams.
+    // komuxer (embedded in StreamPack) opens a plain TCP socket even for rtmps:// URLs;
+    // this proxy wraps the real SSLSocket so TLS is handled externally.
+    private var rtmpsProxy: RtmpsTcpProxyServer? = null
+
     // We store config parameters here so we can create the streamer suspend-safely
     private var confBitrate = 64000
     private var confSampleRate = 44100
@@ -114,13 +119,39 @@ class RtmpClientImpl(
         lastUrl = url
         scope.launch {
             try {
-                Log.i(TAG, "🚀 startStream: Using StreamPack to connect to \$url")
-                streamer?.startStream(url)
+                val effectiveUrl = if (url.startsWith("rtmps://", ignoreCase = true)) {
+                    // komuxer does not implement TLS for rtmps:// — it always opens a plain TCP
+                    // socket. We start a local SSLSocket proxy and give StreamPack the plain
+                    // rtmp://127.0.0.1:<port>/... URL so TLS is handled here in the JVM.
+                    val withoutScheme = url.substring("rtmps://".length)
+                    val slashIdx = withoutScheme.indexOf('/')
+                    val hostPort = if (slashIdx >= 0) withoutScheme.substring(0, slashIdx) else withoutScheme
+                    val path     = if (slashIdx >= 0) withoutScheme.substring(slashIdx) else "/"
+                    val colonIdx = hostPort.lastIndexOf(':')
+                    val remoteHost = if (colonIdx >= 0) hostPort.substring(0, colonIdx) else hostPort
+                    val remotePort = if (colonIdx >= 0) hostPort.substring(colonIdx + 1).toIntOrNull() ?: 443 else 443
+
+                    // Stop any stale proxy from a previous attempt
+                    rtmpsProxy?.stop()
+                    val proxy = RtmpsTcpProxyServer().also { rtmpsProxy = it }
+                    val localPort = proxy.start(remoteHost, remotePort)
+
+                    val rewritten = "rtmp://127.0.0.1:$localPort$path"
+                    Log.i(TAG, "🔐 RTMPS proxy: $url → $rewritten")
+                    rewritten
+                } else {
+                    url
+                }
+
+                Log.i(TAG, "🚀 startStream: Using StreamPack to connect to $effectiveUrl")
+                streamer?.startStream(effectiveUrl)
                 streamingActive = true
                 Log.i(TAG, "🔗 Session OPEN & Publishing via StreamPack!")
                 handler.notifyConnected()
             } catch (e: Exception) {
                 Log.e(TAG, "🔴 Session CLOSED unexpectedly", e)
+                rtmpsProxy?.stop()
+                rtmpsProxy = null
                 handler.notifyDisconnected("Failed", e.message ?: "Unknown error")
             }
         }
@@ -140,6 +171,10 @@ class RtmpClientImpl(
                 streamer = null
             } catch (e: Exception) {
                 Log.e(TAG, "stopStream error", e)
+            } finally {
+                // Always tear down the RTMPS proxy (no-op for plain rtmp://)
+                rtmpsProxy?.stop()
+                rtmpsProxy = null
             }
         }
     }
@@ -161,7 +196,10 @@ class RtmpClientImpl(
     }
 
     override fun reTry(delay: Long, reason: String): Boolean {
-        Log.w(TAG, "reTry requested due to \$reason, delay=\$delay")
+        Log.w(TAG, "reTry requested due to $reason, delay=$delay")
+        // Stop any running proxy before the new startStream creates a fresh one
+        rtmpsProxy?.stop()
+        rtmpsProxy = null
         stopStream()
         lastUrl?.let { startStream(it) }
         return true
